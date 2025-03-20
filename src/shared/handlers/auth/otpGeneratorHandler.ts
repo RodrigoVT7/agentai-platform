@@ -3,14 +3,18 @@ import { StorageService } from "../../services/storage.service";
 import { NotificationService } from "../../services/notification.service";
 import crypto from "crypto";
 import { STORAGE_TABLES, AUTH_CONFIG } from "../../constants";
+import { Logger, createLogger } from "../../utils/logger";
+import { createAppError } from "../../utils/error.utils";
 
 export class OtpGeneratorHandler {
   private storageService: StorageService;
   private notificationService: NotificationService;
+  private logger: Logger;
   
-  constructor() {
+  constructor(logger?: Logger) {
     this.storageService = new StorageService();
     this.notificationService = new NotificationService();
+    this.logger = logger || createLogger();
   }
   
   async execute(otpRequest: any): Promise<void> {
@@ -42,18 +46,22 @@ export class OtpGeneratorHandler {
       });
       
       for await (const previousOtp of previousOtps) {
-        await tableClient.updateEntity({
-          ...previousOtp,
-          used: true
-        }, "Merge");
+        // Asegurarnos de que partitionKey y rowKey estén definidos
+        if (previousOtp.partitionKey && previousOtp.rowKey) {
+          await tableClient.updateEntity({
+            partitionKey: previousOtp.partitionKey,
+            rowKey: previousOtp.rowKey,
+            used: true
+          }, "Merge");
+        }
       }
       
       // Enviar OTP por email
       const emailTemplate = type === 'registration' ? 'welcome-otp' : 'login-otp';
       await this.notificationService.sendOtpEmail(email, otp, expiresAt, emailTemplate);
-    } catch (error) {
-      console.error(`Error al generar OTP para ${email}:`, error);
-      throw error;
+    } catch (error: any) {
+      this.logger.error(`Error al generar OTP para ${email}:`, error);
+      throw createAppError(500, `Error al generar OTP para ${email}`);
     }
   }
   

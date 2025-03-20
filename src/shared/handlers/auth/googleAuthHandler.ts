@@ -5,6 +5,8 @@ import { StorageService } from "../../services/storage.service";
 import { JwtService } from "../../utils/jwt.service";
 import { User } from "../../models/user.model";
 import { STORAGE_TABLES } from "../../constants";
+import { createAppError } from "../../utils/error.utils";
+import { Logger, createLogger } from "../../utils/logger";
 
 // Crear cliente OAuth2 para verificar tokens de Google
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -12,10 +14,12 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 export class GoogleAuthHandler {
   private storageService: StorageService;
   private jwtService: JwtService;
+  private logger: Logger;
   
-  constructor() {
+  constructor(logger?: Logger) {
     this.storageService = new StorageService();
     this.jwtService = new JwtService();
+    this.logger = logger || createLogger();
   }
   
   async execute(data: any): Promise<any> {
@@ -30,7 +34,7 @@ export class GoogleAuthHandler {
       
       const payload = ticket.getPayload();
       if (!payload || !payload.email) {
-        throw { statusCode: 400, message: 'Token de Google inválido' };
+        throw createAppError(400, 'Token de Google inválido');
       }
       
       const { email, given_name, family_name, sub: googleId } = payload;
@@ -38,7 +42,7 @@ export class GoogleAuthHandler {
       // Buscar usuario por googleId o email
       const tableClient = this.storageService.getTableClient(STORAGE_TABLES.USERS);
       
-      let user = null;
+      let user: any = null;
       
       // Buscar primero por googleId
       const usersByGoogleId = await tableClient.listEntities({
@@ -96,7 +100,7 @@ export class GoogleAuthHandler {
         if (updateRequired) {
           await tableClient.updateEntity({
             partitionKey: 'user',
-            rowKey: user.id,
+            rowKey: user.id as string, // Asegurarnos de que es string
             googleId: googleId,
             firstName: given_name || user.firstName,
             lastName: family_name || user.lastName,
@@ -106,7 +110,7 @@ export class GoogleAuthHandler {
           // Solo actualizar último login
           await tableClient.updateEntity({
             partitionKey: 'user',
-            rowKey: user.id,
+            rowKey: user.id as string, // Asegurarnos de que es string
             lastLogin: Date.now()
           }, "Merge");
         }
@@ -117,7 +121,7 @@ export class GoogleAuthHandler {
       const sessionTableClient = this.storageService.getTableClient(STORAGE_TABLES.SESSIONS);
       
       await sessionTableClient.createEntity({
-        partitionKey: user.id,
+        partitionKey: user.id as string, // Asegurarnos de que es string
         rowKey: sessionId,
         userId: user.id,
         token: sessionId,
@@ -143,12 +147,13 @@ export class GoogleAuthHandler {
         expiresIn: 3600, // 1 hora en segundos
         isNewUser: !user.lastLogin // Indicar si es un usuario nuevo
       };
-    } catch (error) {
-      console.error('Error en autenticación con Google:', error);
+    } catch (error: any) {
+      this.logger.error('Error en autenticación con Google:', error);
+      
       if (error.statusCode) {
         throw error;
       }
-      throw { statusCode: 500, message: 'Error en autenticación con Google' };
+      throw createAppError(500, 'Error en autenticación con Google');
     }
   }
 }

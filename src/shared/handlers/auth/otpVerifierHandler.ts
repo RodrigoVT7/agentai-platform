@@ -3,14 +3,18 @@ import { v4 as uuidv4 } from "uuid";
 import { StorageService } from "../../services/storage.service";
 import { JwtService } from "../../utils/jwt.service";
 import { STORAGE_TABLES } from "../../constants";
+import { Logger, createLogger } from "../../utils/logger";
+import { createAppError } from "../../utils/error.utils";
 
 export class OtpVerifierHandler {
   private storageService: StorageService;
   private jwtService: JwtService;
+  private logger: Logger;
   
-  constructor() {
+  constructor(logger?: Logger) {
     this.storageService = new StorageService();
     this.jwtService = new JwtService();
+    this.logger = logger || createLogger();
   }
   
   async execute(data: any): Promise<any> {
@@ -24,7 +28,7 @@ export class OtpVerifierHandler {
         queryOptions: { filter: `partitionKey eq '${email}' and used eq false and expiresAt gt ${Date.now()}` }
       });
       
-      let validOtp = null;
+      let validOtp: any = null;
       
       for await (const entity of otpEntities) {
         if (entity.otp === otp) {
@@ -34,22 +38,30 @@ export class OtpVerifierHandler {
       }
       
       if (!validOtp) {
-        throw { statusCode: 401, message: 'Código OTP inválido o expirado' };
+        throw createAppError(401, 'Código OTP inválido o expirado');
       }
       
       // Marcar OTP como usado
-      await otpTableClient.updateEntity({
-        ...validOtp,
-        used: true
-      }, "Merge");
+      // Asegurarnos de que partitionKey y rowKey estén definidos
+      if (validOtp.partitionKey && validOtp.rowKey) {
+        await otpTableClient.updateEntity({
+          partitionKey: validOtp.partitionKey,
+          rowKey: validOtp.rowKey,
+          used: true
+        }, "Merge");
+      }
       
       // Obtener información del usuario
-      const userId = validOtp.userId;
+      const userId = validOtp.userId as string; // Asegurarnos de que es string
+      if (!userId) {
+        throw createAppError(500, 'Error en datos de OTP: userId no encontrado');
+      }
+      
       const userTableClient = this.storageService.getTableClient(STORAGE_TABLES.USERS);
       const user = await userTableClient.getEntity('user', userId);
       
       if (!user || !user.isActive) {
-        throw { statusCode: 403, message: 'Usuario inactivo o no encontrado' };
+        throw createAppError(403, 'Usuario inactivo o no encontrado');
       }
       
       // Actualizar último login
@@ -90,12 +102,14 @@ export class OtpVerifierHandler {
         token,
         expiresIn: 3600 // 1 hora en segundos
       };
-    } catch (error) {
-      if (error.statusCode) {
+    } catch (error: any) {
+      this.logger.error('Error al verificar OTP:', error);
+      
+      if ('statusCode' in error) {
         throw error;
       }
-      console.error('Error al verificar OTP:', error);
-      throw { statusCode: 500, message: 'Error al verificar OTP' };
+      
+      throw createAppError(500, 'Error al verificar OTP');
     }
   }
 }

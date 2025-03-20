@@ -3,14 +3,18 @@ import { v4 as uuidv4 } from "uuid";
 import { StorageService } from "../../services/storage.service";
 import { JwtService } from "../../utils/jwt.service";
 import { STORAGE_TABLES } from "../../constants";
+import { Logger, createLogger } from "../../utils/logger";
+import { createAppError } from "../../utils/error.utils";
 
 export class TokenRefreshHandler {
   private storageService: StorageService;
   private jwtService: JwtService;
+  private logger: Logger;
   
-  constructor() {
+  constructor(logger?: Logger) {
     this.storageService = new StorageService();
     this.jwtService = new JwtService();
+    this.logger = logger || createLogger();
   }
   
   async execute(data: any): Promise<any> {
@@ -23,17 +27,17 @@ export class TokenRefreshHandler {
       try {
         // Intentar verificar normalmente
         payload = this.jwtService.verifyToken(refreshToken);
-      } catch (error) {
+      } catch (error: any) {
         // Si el error es de expiración, extraer el payload de todos modos
-        if (error.name === 'TokenExpiredError') {
+        if (error && error.name === 'TokenExpiredError') {
           payload = this.jwtService.decodeToken(refreshToken);
         } else {
-          throw { statusCode: 401, message: 'Token inválido' };
+          throw createAppError(401, 'Token inválido');
         }
       }
       
       if (!payload || !payload.userId || !payload.sessionId) {
-        throw { statusCode: 401, message: 'Token inválido o corrupto' };
+        throw createAppError(401, 'Token inválido o corrupto');
       }
       
       const { userId, sessionId } = payload;
@@ -45,16 +49,17 @@ export class TokenRefreshHandler {
         const session = await sessionTableClient.getEntity(userId, sessionId);
         
         if (!session.isActive) {
-          throw { statusCode: 401, message: 'Sesión inactiva' };
+          throw createAppError(401, 'Sesión inactiva');
         }
         
         // Verificar fecha de expiración
-        if (session.expiresAt < Date.now()) {
-          throw { statusCode: 401, message: 'Sesión expirada' };
+        const expiresAt = session.expiresAt as number;
+        if (expiresAt < Date.now()) {
+          throw createAppError(401, 'Sesión expirada');
         }
-      } catch (error) {
-        if (error.statusCode) throw error;
-        throw { statusCode: 401, message: 'Sesión no encontrada' };
+      } catch (error: any) {
+        if ('statusCode' in error) throw error;
+        throw createAppError(401, 'Sesión no encontrada');
       }
       
       // Verificar usuario
@@ -64,7 +69,7 @@ export class TokenRefreshHandler {
         const user = await userTableClient.getEntity('user', userId);
         
         if (!user.isActive) {
-          throw { statusCode: 403, message: 'Usuario inactivo' };
+          throw createAppError(403, 'Usuario inactivo');
         }
         
         // Actualizar último login
@@ -81,12 +86,15 @@ export class TokenRefreshHandler {
           sessionId
         });
         
+        // Obtener datos de la sesión para el ipAddress
+        const sessionData = await sessionTableClient.getEntity(userId, sessionId);
+        
         // Opcionalmente, renovar la sesión
         await sessionTableClient.updateEntity({
           partitionKey: userId,
           rowKey: sessionId,
           expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000), // 7 días
-          ipAddress: ip || session.ipAddress
+          ipAddress: ip || sessionData.ipAddress
         }, "Merge");
         
         // Devolver respuesta
@@ -97,16 +105,18 @@ export class TokenRefreshHandler {
           token: newToken,
           expiresIn: 3600 // 1 hora en segundos
         };
-      } catch (error) {
-        if (error.statusCode) throw error;
-        throw { statusCode: 404, message: 'Usuario no encontrado' };
+      } catch (error: any) {
+        if ('statusCode' in error) throw error;
+        throw createAppError(404, 'Usuario no encontrado');
       }
-    } catch (error) {
-      if (error.statusCode) {
+    } catch (error: any) {
+      this.logger.error('Error al refrescar token:', error);
+      
+      if ('statusCode' in error) {
         throw error;
       }
-      console.error('Error al refrescar token:', error);
-      throw { statusCode: 500, message: 'Error al refrescar token' };
+      
+      throw createAppError(500, 'Error al refrescar token');
     }
   }
 }
