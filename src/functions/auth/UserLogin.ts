@@ -2,8 +2,13 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { UserLoginHandler } from "../../shared/handlers/auth/userLoginHandler";
 import { UserLoginValidator } from "../../shared/validators/auth/userLoginValidator";
+import { createLogger } from "../../shared/utils/logger";
+import { toAppError } from "../../shared/utils/error.utils";
 
 export async function UserLogin(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
+  // Crear un logger seguro
+  const logger = createLogger(context);
+  
   try {
     // Obtener los datos del cuerpo
     const userData = await request.json();
@@ -28,11 +33,12 @@ export async function UserLogin(request: HttpRequest, context: InvocationContext
       jsonBody: result
     };
   } catch (error) {
-    context.log.error("Error en login de usuario:", error);
+    logger.error("Error en login de usuario:", error);
     
+    const appError = toAppError(error);
     return {
-      status: error.statusCode || 500,
-      jsonBody: { error: error.message || "Error interno del servidor" }
+      status: appError.statusCode,
+      jsonBody: { error: appError.message, details: appError.details }
     };
   }
 }

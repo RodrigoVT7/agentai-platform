@@ -2,8 +2,13 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { GoogleAuthHandler } from "../../shared/handlers/auth/googleAuthHandler";
 import { GoogleAuthValidator } from "../../shared/validators/auth/googleAuthValidator";
+import { createLogger } from "../../shared/utils/logger";
+import { toAppError } from "../../shared/utils/error.utils";
 
 export async function GoogleAuth(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
+  // Crear un logger seguro
+  const logger = createLogger(context);
+  
   try {
     // Obtener los datos del cuerpo
     const authData = await request.json();
@@ -28,11 +33,12 @@ export async function GoogleAuth(request: HttpRequest, context: InvocationContex
       jsonBody: result
     };
   } catch (error) {
-    context.log.error("Error en autenticación con Google:", error);
+    logger.error("Error en autenticación con Google:", error);
     
+    const appError = toAppError(error);
     return {
-      status: error.statusCode || 500,
-      jsonBody: { error: error.message || "Error interno del servidor" }
+      status: appError.statusCode,
+      jsonBody: { error: appError.message, details: appError.details }
     };
   }
 }
