@@ -1,17 +1,19 @@
 // src/functions/auth/OtpGenerator.ts
 import { app, InvocationContext } from "@azure/functions";
 import { OtpGeneratorHandler } from "../../shared/handlers/auth/otpGeneratorHandler";
+import { createLogger } from "../../shared/utils/logger";
 
 export async function OtpGenerator(queueItem: unknown, context: InvocationContext): Promise<void> {
   const otpRequest = queueItem as any;
+  const logger = createLogger(context);
   
   try {
     const handler = new OtpGeneratorHandler();
     await handler.execute(otpRequest);
     
-    context.log(`OTP generado correctamente para ${otpRequest.email}`);
+    logger.info(`OTP generado correctamente para ${otpRequest.email}`);
   } catch (error) {
-    context.log.error(`Error al generar OTP para ${otpRequest.email}:`, error);
+    logger.error(`Error al generar OTP para ${otpRequest.email}:`, error);
   }
 }
 

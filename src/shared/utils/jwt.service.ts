@@ -12,7 +12,8 @@ export class JwtService {
   }
   
   generateToken(payload: Record<string, any>, expiresIn: string = "1h"): string {
-    const options: SignOptions = { expiresIn };
+    // Convertir el expiresIn a un tipo compatible con la SignOptions
+    const options: SignOptions = { expiresIn: expiresIn as jwt.SignOptions['expiresIn'] };
     return jwt.sign(payload, this.secret, options);
   }
   

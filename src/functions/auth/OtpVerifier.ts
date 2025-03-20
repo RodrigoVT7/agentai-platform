@@ -2,8 +2,12 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { OtpVerifierHandler } from "../../shared/handlers/auth/otpVerifierHandler";
 import { OtpVerifierValidator } from "../../shared/validators/auth/otpVerifierValidator";
+import { createLogger } from "../../shared/utils/logger";
+import { toAppError } from "../../shared/utils/error.utils";
 
 export async function OtpVerifier(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
+  const logger = createLogger(context);
+  
   try {
     // Obtener los datos del cuerpo
     const otpData = await request.json();
@@ -28,11 +32,12 @@ export async function OtpVerifier(request: HttpRequest, context: InvocationConte
       jsonBody: result
     };
   } catch (error) {
-    context.log.error("Error en verificación de OTP:", error);
+    logger.error("Error en verificación de OTP:", error);
     
+    const appError = toAppError(error);
     return {
-      status: error.statusCode || 500,
-      jsonBody: { error: error.message || "Error interno del servidor" }
+      status: appError.statusCode,
+      jsonBody: { error: appError.message, details: appError.details }
     };
   }
 }

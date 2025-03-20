@@ -2,8 +2,12 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { UserRegisterHandler } from "../../shared/handlers/auth/userRegisterHandler";
 import { UserRegisterValidator } from "../../shared/validators/auth/userRegisterValidator";
+import { createLogger } from "../../shared/utils/logger";
+import { toAppError } from "../../shared/utils/error.utils";
 
 export async function UserRegister(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
+  const logger = createLogger(context);
+  
   try {
     // Obtener los datos del cuerpo
     const userData = await request.json();
@@ -28,11 +32,12 @@ export async function UserRegister(request: HttpRequest, context: InvocationCont
       jsonBody: result
     };
   } catch (error) {
-    context.log.error("Error en registro de usuario:", error);
+    logger.error("Error en registro de usuario:", error);
     
+    const appError = toAppError(error);
     return {
-      status: error.statusCode || 500,
-      jsonBody: { error: error.message || "Error interno del servidor" }
+      status: appError.statusCode,
+      jsonBody: { error: appError.message, details: appError.details }
     };
   }
 }
