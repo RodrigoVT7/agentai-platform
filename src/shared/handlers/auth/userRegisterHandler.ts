@@ -4,14 +4,18 @@ import { StorageService } from "../../services/storage.service";
 import { NotificationService } from "../../services/notification.service";
 import { User } from "../../models/user.model";
 import { STORAGE_TABLES, STORAGE_QUEUES } from "../../constants";
+import { Logger, createLogger } from "../../utils/logger";
+import { createAppError } from "../../utils/error.utils";
 
 export class UserRegisterHandler {
   private storageService: StorageService;
   private notificationService: NotificationService;
+  private logger: Logger;
   
-  constructor() {
+  constructor(logger?: Logger) {
     this.storageService = new StorageService();
     this.notificationService = new NotificationService();
+    this.logger = logger || createLogger();
   }
   
   async execute(userData: any): Promise<any> {
@@ -25,7 +29,7 @@ export class UserRegisterHandler {
       
       for await (const user of users) {
         if (user.email === userData.email) {
-          throw { statusCode: 409, message: 'El email ya está registrado' };
+          throw createAppError(409, 'El email ya está registrado');
         }
       }
       
@@ -62,12 +66,15 @@ export class UserRegisterHandler {
         firstName: newUser.firstName,
         message: "Usuario registrado correctamente. Se ha enviado un código de verificación a su email."
       };
-    } catch (error) {
-      if (error.statusCode) {
+    } catch (error: unknown) {
+      this.logger.error('Error al registrar usuario:', error);
+      
+      // Re-lanzar el error si ya es un AppError
+      if (error && typeof error === 'object' && 'statusCode' in error) {
         throw error;
       }
-      console.error('Error al registrar usuario:', error);
-      throw { statusCode: 500, message: 'Error al registrar usuario' };
+      
+      throw createAppError(500, 'Error al registrar usuario');
     }
   }
 }

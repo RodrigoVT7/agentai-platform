@@ -1,12 +1,16 @@
 // src/shared/handlers/auth/userProfileHandler.ts
 import { StorageService } from "../../services/storage.service";
 import { STORAGE_TABLES } from "../../constants";
+import { Logger, createLogger } from "../../utils/logger";
+import { createAppError } from "../../utils/error.utils";
 
 export class UserProfileHandler {
   private storageService: StorageService;
+  private logger: Logger;
   
-  constructor() {
+  constructor(logger?: Logger) {
     this.storageService = new StorageService();
+    this.logger = logger || createLogger();
   }
   
   async getProfile(userId: string): Promise<any> {
@@ -17,24 +21,30 @@ export class UserProfileHandler {
       const user = await tableClient.getEntity('user', userId);
       
       if (!user.isActive) {
-        throw { statusCode: 403, message: 'Usuario inactivo' };
+        throw createAppError(403, 'Usuario inactivo');
       }
       
       // Filtrar campos sensibles
       const { passwordHash, ...profileData } = user;
       
       return profileData;
-    } catch (error) {
-      console.error('Error al obtener perfil:', error);
-      if (error.statusCode) {
+    } catch (error: unknown) {
+      this.logger.error('Error al obtener perfil:', error);
+      
+      // Re-lanzar el error si ya es un AppError
+      if (error && typeof error === 'object' && 'statusCode' in error) {
         throw error;
       }
       
-      if (error.statusCode === 404) {
-        throw { statusCode: 404, message: 'Perfil no encontrado' };
+      // Errores específicos de Azure Table Storage
+      if (error instanceof Error) {
+        const errorAny = error as any;
+        if (errorAny.statusCode === 404 || errorAny.code === 'ResourceNotFound') {
+          throw createAppError(404, 'Perfil no encontrado');
+        }
       }
       
-      throw { statusCode: 500, message: 'Error al obtener perfil' };
+      throw createAppError(500, 'Error al obtener perfil');
     }
   }
   
@@ -46,7 +56,7 @@ export class UserProfileHandler {
       const existingUser = await tableClient.getEntity('user', userId);
       
       if (!existingUser.isActive) {
-        throw { statusCode: 403, message: 'Usuario inactivo' };
+        throw createAppError(403, 'Usuario inactivo');
       }
       
       // Campos que no se pueden modificar
@@ -75,17 +85,23 @@ export class UserProfileHandler {
       
       // Obtener perfil actualizado
       return await this.getProfile(userId);
-    } catch (error) {
-      console.error('Error al actualizar perfil:', error);
-      if (error.statusCode) {
+    } catch (error: unknown) {
+      this.logger.error('Error al actualizar perfil:', error);
+      
+      // Re-lanzar el error si ya es un AppError
+      if (error && typeof error === 'object' && 'statusCode' in error) {
         throw error;
       }
       
-      if (error.statusCode === 404) {
-        throw { statusCode: 404, message: 'Perfil no encontrado' };
+      // Errores específicos de Azure Table Storage
+      if (error instanceof Error) {
+        const errorAny = error as any;
+        if (errorAny.statusCode === 404 || errorAny.code === 'ResourceNotFound') {
+          throw createAppError(404, 'Perfil no encontrado');
+        }
       }
       
-      throw { statusCode: 500, message: 'Error al actualizar perfil' };
+      throw createAppError(500, 'Error al actualizar perfil');
     }
   }
 }
