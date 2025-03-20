@@ -2,7 +2,7 @@
   USERS: "users",
   AGENTS: "agents",
   SESSIONS: "sessions",
-  OTP_CODES: "otp_codes",
+  OTP_CODES: "otpcodes",
   KNOWLEDGE_BASES: "knowledge_bases",
   DOCUMENTS: "documents",
   CONVERSATIONS: "conversations",
