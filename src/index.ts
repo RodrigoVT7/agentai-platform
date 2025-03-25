@@ -20,9 +20,9 @@ import './functions/auth/UserManagement';
 // import './functions/agents/AgentStats';
 
 // Módulo de conocimiento
-// import './functions/knowledge/DocumentUpload';
-// import './functions/knowledge/DocumentProcessor';
-// import './functions/knowledge/EmbeddingGenerator';
+import './functions/knowledge/DocumentUpload';
+import './functions/knowledge/DocumentProcessor';
+import './functions/knowledge/EmbeddingGenerator';
 // import './functions/knowledge/DocumentSearch';
 // import './functions/knowledge/KnowledgeBaseManager';
 // import './functions/knowledge/DocumentManager';
