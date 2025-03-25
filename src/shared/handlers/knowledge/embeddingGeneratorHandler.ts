@@ -64,16 +64,17 @@ export class EmbeddingGeneratorHandler {
         success: true,
         vector
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(`Error al generar embedding para chunk ${chunkId}:`, error);
       
       // No actualizar documento a fallido si solo falla un chunk
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         chunkId,
         documentId,
         knowledgeBaseId,
         success: false,
-        error: error.message || 'Error desconocido al generar embedding'
+        error: errorMessage || 'Error desconocido al generar embedding'
       };
     }
   }
@@ -90,16 +91,36 @@ export class EmbeddingGeneratorHandler {
       });
       
       for await (const vector of vectors) {
+        // Verificar y parsear vector y metadata correctamente
+        let vectorData: number[] = [];
+        if (typeof vector.vector === 'string') {
+          try {
+            vectorData = JSON.parse(vector.vector);
+          } catch (e) {
+            this.logger.warn(`Error al parsear vector para ${chunkId}: ${e}`);
+            vectorData = [];
+          }
+        }
+        
+        let metadataObj: Record<string, any> | undefined = undefined;
+        if (typeof vector.metadata === 'string') {
+          try {
+            metadataObj = JSON.parse(vector.metadata);
+          } catch (e) {
+            this.logger.warn(`Error al parsear metadata para ${chunkId}: ${e}`);
+          }
+        }
+        
         return {
-          id: vector.id,
-          documentId: vector.documentId,
-          chunkId: vector.chunkId,
-          knowledgeBaseId: vector.knowledgeBaseId,
-          vector: JSON.parse(vector.vector),
-          content: vector.content,
-          metadata: vector.metadata ? JSON.parse(vector.metadata) : undefined,
-          createdAt: vector.createdAt
-        } as Vector;
+          id: vector.id as string,
+          documentId: vector.documentId as string,
+          chunkId: vector.chunkId as string,
+          knowledgeBaseId: vector.knowledgeBaseId as string,
+          vector: vectorData,
+          content: vector.content as string,
+          metadata: metadataObj,
+          createdAt: vector.createdAt as number
+        };
       }
       
       return null;
@@ -140,9 +161,10 @@ export class EmbeddingGeneratorHandler {
       await tableClient.createEntity(vectorEntity);
       
       this.logger.debug(`Vector almacenado para chunk ${chunkId}`);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(`Error al almacenar vector para chunk ${chunkId}:`, error);
-      throw createAppError(500, `Error al almacenar vector: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw createAppError(500, `Error al almacenar vector: ${errorMessage}`);
     }
   }
   
@@ -170,10 +192,40 @@ export class EmbeddingGeneratorHandler {
       
       // @ts-ignore - readableStreamBody existe pero TypeScript no lo reconoce
       for await (const chunk of downloadResponse.readableStreamBody) {
-        chunks.push(Buffer.from(chunk));
+        // Manejar diferentes tipos de chunks de forma segura
+        if (Buffer.isBuffer(chunk)) {
+          chunks.push(chunk);
+        } else if (typeof chunk === 'string') {
+          chunks.push(Buffer.from(chunk, 'utf-8'));
+        } else if (chunk && typeof chunk === 'object') {
+          // Verificamos si tiene buffer
+          if ('buffer' in chunk) {
+            const typedChunk = chunk as { buffer: ArrayBuffer };
+            chunks.push(Buffer.from(typedChunk.buffer));
+          }
+          // Verificamos si es array-like
+          else if ('length' in chunk) {
+            const typedChunk = chunk as unknown as ArrayBuffer;
+            chunks.push(Buffer.from(typedChunk));
+          }
+          else {
+            // Para cualquier otro objeto, convertir a string
+            chunks.push(Buffer.from(JSON.stringify(chunk)));
+          }
+        } else {
+          // Último recurso para cualquier otro tipo
+          chunks.push(Buffer.from(String(chunk)));
+        }
       }
       
-      const metadata = JSON.parse(Buffer.concat(chunks).toString());
+      // Parsear JSON con manejo de errores
+      let metadata: any;
+      try {
+        metadata = JSON.parse(Buffer.concat(chunks).toString());
+      } catch (error) {
+        this.logger.error(`Error al parsear metadatos JSON para ${documentId}:`, error);
+        return;
+      }
       
       // Verificar cuántos chunks tiene el documento
       const totalChunks = metadata.chunkCount || 0;

@@ -87,17 +87,20 @@ export class DocumentProcessorHandler {
         status: DocumentProcessingStatus.PROCESSED,
         chunks
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(`Error al procesar documento ${documentId}:`, error);
       
       // Actualizar estado del documento a 'failed'
       await this.updateDocumentStatus(documentId, knowledgeBaseId, DocumentProcessingStatus.FAILED, error);
       
-      if (error.statusCode) {
+      // Verificar si es un AppError
+      if (error && typeof error === 'object' && 'statusCode' in error) {
         throw error;
       }
       
-      throw createAppError(500, `Error al procesar documento: ${error.message}`);
+      // Crear un mensaje de error genérico
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw createAppError(500, `Error al procesar documento: ${errorMessage}`);
     }
   }
   
@@ -108,7 +111,7 @@ export class DocumentProcessorHandler {
     documentId: string, 
     knowledgeBaseId: string, 
     status: DocumentProcessingStatus,
-    error?: any
+    error?: unknown
   ): Promise<void> {
     try {
       const tableClient = this.storageService.getTableClient(STORAGE_TABLES.DOCUMENTS);
@@ -121,7 +124,14 @@ export class DocumentProcessorHandler {
       };
       
       if (error) {
-        updateEntity.processingError = error.message || JSON.stringify(error);
+        // Asegurar que error.message sea un string
+        const errorMessage = error instanceof Error 
+          ? error.message 
+          : typeof error === 'object' && error !== null && 'message' in error
+            ? String((error as { message: unknown }).message)
+            : String(error);
+        
+        updateEntity.processingError = errorMessage;
       }
       
       await tableClient.updateEntity(updateEntity, "Merge");
@@ -155,7 +165,30 @@ export class DocumentProcessorHandler {
       
       // @ts-ignore - readableStreamBody existe pero TypeScript no lo reconoce correctamente
       for await (const chunk of downloadResponse.readableStreamBody) {
-        chunks.push(Buffer.from(chunk));
+        // Asegurar que chunk se convierte correctamente a Buffer
+        if (Buffer.isBuffer(chunk)) {
+          chunks.push(chunk);
+        } else if (typeof chunk === 'string') {
+          chunks.push(Buffer.from(chunk, 'utf-8'));
+        } else if (chunk && typeof chunk === 'object') {
+          // Verificamos si tiene buffer
+          if ('buffer' in chunk) {
+            const typedChunk = chunk as { buffer: ArrayBuffer };
+            chunks.push(Buffer.from(typedChunk.buffer));
+          }
+          // Verificamos si es array-like
+          else if ('length' in chunk) {
+            const typedChunk = chunk as unknown as ArrayBuffer;
+            chunks.push(Buffer.from(typedChunk));
+          }
+          else {
+            // Para cualquier otro objeto, convertir a string
+            chunks.push(Buffer.from(JSON.stringify(chunk)));
+          }
+        } else {
+          // Último recurso para cualquier otro tipo
+          chunks.push(Buffer.from(String(chunk)));
+        }
       }
       
       // Combinar los chunks en un solo buffer
@@ -168,9 +201,10 @@ export class DocumentProcessorHandler {
         buffer,
         metadata: propertiesResponse.metadata
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(`Error al descargar documento desde ${storageUrl}:`, error);
-      throw createAppError(500, `Error al descargar documento: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw createAppError(500, `Error al descargar documento: ${errorMessage}`);
     }
   }
   
@@ -215,9 +249,10 @@ export class DocumentProcessorHandler {
           // Si no se puede determinar, tratar como texto plano
           return buffer.toString('utf-8');
       }
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(`Error al extraer texto de documento ${contentType}:`, error);
-      throw createAppError(422, `Error al extraer texto: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw createAppError(422, `Error al extraer texto: ${errorMessage}`);
     }
   }
   
@@ -247,9 +282,10 @@ export class DocumentProcessorHandler {
       }
       
       return text;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Error al extraer texto de PDF:', error);
-      throw new Error(`No se pudo extraer texto del PDF: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`No se pudo extraer texto del PDF: ${errorMessage}`);
     }
   }
   
@@ -261,9 +297,10 @@ export class DocumentProcessorHandler {
       // Usar mammoth para convertir .docx a texto
       const result = await mammoth.extractRawText({ buffer });
       return result.value;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Error al extraer texto de Word:', error);
-      throw new Error(`No se pudo extraer texto del documento Word: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`No se pudo extraer texto del documento Word: ${errorMessage}`);
     }
   }
   
@@ -281,9 +318,10 @@ export class DocumentProcessorHandler {
       
       // Convertir a texto
       return data.map((row: any) => row.join(', ')).join('\n');
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Error al extraer texto de CSV:', error);
-      throw new Error(`No se pudo extraer texto del CSV: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`No se pudo extraer texto del CSV: ${errorMessage}`);
     }
   }
   
@@ -302,9 +340,10 @@ export class DocumentProcessorHandler {
       
       // Si no, convertir todo el objeto a texto
       return JSON.stringify(jsonData, null, 2);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Error al extraer texto de JSON:', error);
-      throw new Error(`No se pudo extraer texto del JSON: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`No se pudo extraer texto del JSON: ${errorMessage}`);
     }
   }
   
@@ -424,9 +463,10 @@ export class DocumentProcessorHandler {
       await metadataBlockBlobClient.upload(metadataContent, metadataContent.length);
       
       this.logger.debug(`Chunks guardados en Blob Storage para documento ${documentId}`);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(`Error al guardar chunks en Blob Storage:`, error);
-      throw createAppError(500, `Error al guardar chunks: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw createAppError(500, `Error al guardar chunks: ${errorMessage}`);
     }
   }
   
@@ -457,9 +497,10 @@ export class DocumentProcessorHandler {
       }
       
       this.logger.debug(`${chunks.length} chunks encolados para generación de embeddings`);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(`Error al encolar chunks para embeddings:`, error);
-      throw createAppError(500, `Error al encolar chunks: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw createAppError(500, `Error al encolar chunks: ${errorMessage}`);
     }
   }
   

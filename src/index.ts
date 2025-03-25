@@ -23,7 +23,7 @@ import './functions/auth/UserManagement';
 import './functions/knowledge/DocumentUpload';
 import './functions/knowledge/DocumentProcessor';
 import './functions/knowledge/EmbeddingGenerator';
-// import './functions/knowledge/DocumentSearch';
+import './functions/knowledge/DocumentSearch';
 // import './functions/knowledge/KnowledgeBaseManager';
 // import './functions/knowledge/DocumentManager';
 
