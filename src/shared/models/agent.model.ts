@@ -5,11 +5,11 @@
   name: string;
   description: string;
   modelType: string;
-  modelConfig: any;
+  modelConfig: string; // Cambiado de any a string
   handoffEnabled: boolean;
   systemInstructions: string;
   temperature: number;
   isActive: boolean;
-  operatingHours: any;
+  operatingHours: string | null; // Cambiado de any a string | null
   createdAt: number;
 }

@@ -47,21 +47,29 @@ export class AgentListHandler {
       const allAgents: Agent[] = [];
       for await (const agent of agents) {
         // Convertir a tipo Agent
-        const agentItem: Agent = {
-          id: agent.id as string,
-          userId: agent.userId as string,
-          code: agent.code as string,
-          name: agent.name as string,
-          description: agent.description as string,
-          modelType: agent.modelType as string,
-          modelConfig: agent.modelConfig || {},
-          handoffEnabled: agent.handoffEnabled as boolean,
-          systemInstructions: agent.systemInstructions as string,
-          temperature: agent.temperature as number,
-          isActive: agent.isActive as boolean,
-          operatingHours: agent.operatingHours || null,
-          createdAt: agent.createdAt as number
-        };
+const agentItem: Agent = {
+  id: agent.id as string,
+  userId: agent.userId as string,
+  code: agent.code as string,
+  name: agent.name as string,
+  description: agent.description as string,
+  modelType: agent.modelType as string,
+  // Asegurarse de que modelConfig sea string
+  modelConfig: typeof agent.modelConfig === 'string' 
+    ? agent.modelConfig 
+    : JSON.stringify(agent.modelConfig || {}),
+  handoffEnabled: agent.handoffEnabled as boolean,
+  systemInstructions: agent.systemInstructions as string,
+  temperature: agent.temperature as number,
+  isActive: agent.isActive as boolean,
+  // Asegurarse de que operatingHours sea string o null
+  operatingHours: agent.operatingHours 
+    ? (typeof agent.operatingHours === 'string' 
+      ? agent.operatingHours 
+      : JSON.stringify(agent.operatingHours))
+    : null,
+  createdAt: agent.createdAt as number
+};
         
         allAgents.push(agentItem);
       }

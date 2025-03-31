@@ -45,7 +45,7 @@ export async function documentManager(request: HttpRequest, context: InvocationC
           // Listar documentos para una base de conocimiento
           const limit = parseInt(request.query.get('limit') || '10');
           const skip = parseInt(request.query.get('skip') || '0');
-          const status = request.query.get('status');
+          const status = request.query.get('status') || undefined;
           
           return await handler.listDocuments(knowledgeBaseId, userId, { limit, skip, status });
         } else {
@@ -76,7 +76,16 @@ export async function documentManager(request: HttpRequest, context: InvocationC
         }
         
         const actionData = await request.json();
-        const action = actionData.action;
+        
+        // Verificar que actionData es un objeto y tiene la propiedad action
+        if (!actionData || typeof actionData !== 'object') {
+          return {
+            status: 400,
+            jsonBody: { error: "Se requiere una acción para realizar" }
+          };
+        }
+
+        const action = (actionData as { action?: string }).action;
         
         if (!action) {
           return {

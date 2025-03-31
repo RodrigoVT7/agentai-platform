@@ -338,12 +338,14 @@ export class KnowledgeBaseManagerHandler {
       }
       
       // Realizar eliminación lógica
-      await tableClient.updateEntity({
-        partitionKey: kb.partitionKey,
-        rowKey: kb.rowKey,
-        isActive: false,
-        updatedAt: Date.now()
-      }, "Merge");
+      if (kb && kb.partitionKey && kb.rowKey) {
+        await tableClient.updateEntity({
+          partitionKey: kb.partitionKey as string,
+          rowKey: kb.rowKey as string,
+          isActive: false,
+          updatedAt: Date.now()
+        }, "Merge");
+      }
       
       // Desactivar documentos asociados
       await this.deactivateDocuments(knowledgeBaseId);
@@ -378,12 +380,14 @@ export class KnowledgeBaseManagerHandler {
       });
       
       for await (const doc of documents) {
-        await tableClient.updateEntity({
-          partitionKey: doc.partitionKey,
-          rowKey: doc.rowKey,
-          isActive: false,
-          updatedAt: now
-        }, "Merge");
+        if (doc.partitionKey && doc.rowKey) {
+          await tableClient.updateEntity({
+            partitionKey: doc.partitionKey as string,
+            rowKey: doc.rowKey as string,
+            isActive: false,
+            updatedAt: now
+          }, "Merge");
+        }
       }
     } catch (error) {
       this.logger.error(`Error al desactivar documentos para KB ${knowledgeBaseId}:`, error);

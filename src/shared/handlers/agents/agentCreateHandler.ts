@@ -57,13 +57,17 @@ export class AgentCreateHandler {
         code: code,
         name: name,
         description: description || '',
-        modelType: modelType || 'gpt-35-turbo',
-        modelConfig: agentData.modelConfig || {},
+        modelType: modelType || 'gpt-4o',
+        // Serializar modelConfig como string
+        modelConfig: typeof agentData.modelConfig === 'object' ? 
+          JSON.stringify(agentData.modelConfig) : agentData.modelConfig || '{}',
         handoffEnabled: handoffEnabled !== undefined ? handoffEnabled : false,
         systemInstructions: systemInstructions || '',
         temperature: temperature !== undefined ? temperature : 0.7,
         isActive: true,
-        operatingHours: agentData.operatingHours || null,
+        // Serializar operatingHours como string
+        operatingHours: agentData.operatingHours ? 
+          JSON.stringify(agentData.operatingHours) : null,
         createdAt: now
       };
       
@@ -126,6 +130,7 @@ export class AgentCreateHandler {
       const kbId = uuidv4();
       const tableClient = this.storageService.getTableClient(STORAGE_TABLES.KNOWLEDGE_BASES);
       
+      // Añadir el campo type que está faltando y asegurar que no hay objetos complejos
       await tableClient.createEntity({
         partitionKey: agentId,
         rowKey: kbId,
@@ -133,6 +138,8 @@ export class AgentCreateHandler {
         agentId: agentId,
         name: "Base de conocimiento predeterminada",
         description: "Base de conocimiento creada automáticamente",
+        type: "vector", // Añadir este campo
+        vectorConfig: "{}", // Configuración vacía pero serializada
         createdBy: userId,
         createdAt: Date.now(),
         updatedAt: Date.now(),

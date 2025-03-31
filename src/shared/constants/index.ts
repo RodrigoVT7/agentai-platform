@@ -9,7 +9,9 @@
   CONVERSATIONS: "conversations",
   MESSAGES: "messages",
   USER_ROLES: "userroles",
-  HANDOFFS: "handoffs"
+  HANDOFFS: "handoffs",
+  USAGE_STATS: "usagestats",
+  FEEDBACK: "feedback"
 };
 
 export const STORAGE_QUEUES = {
@@ -45,7 +47,7 @@ export const EMBEDDING_CONFIG = {
 
 export const AI_CONFIG = {
   EMBEDDING_MODEL: "text-embedding-ada-002",
-  CHAT_MODEL: "gpt-35-turbo",
+  CHAT_MODEL: "gpt-4o",
   TEMPERATURE: 0.7,
   MAX_TOKENS: 4000
 };

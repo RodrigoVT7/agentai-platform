@@ -36,7 +36,7 @@ export class AgentCreateValidator {
     }
     
     // Validar modelType
-    const validModels = ['gpt-35-turbo', 'gpt-4', 'gpt-4-32k', 'gpt-35-turbo-16k'];
+    const validModels = ['gpt-4o', 'gpt-4'];
     if (data.modelType && !validModels.includes(data.modelType)) {
       errors.push(`Tipo de modelo no válido. Valores permitidos: ${validModels.join(', ')}`);
     }
