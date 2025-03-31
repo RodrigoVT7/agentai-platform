@@ -12,12 +12,12 @@ import './functions/auth/UserManagement';
 // Cuando implementes estos módulos, descomenta las siguientes secciones
 
 // Módulo de agentes
-// import './functions/agents/AgentCreate';
-// import './functions/agents/AgentUpdate';
-// import './functions/agents/AgentList';
-// import './functions/agents/AgentDelete';
-// import './functions/agents/AgentRoles';
-// import './functions/agents/AgentStats';
+import './functions/agents/AgentCreate';
+import './functions/agents/AgentUpdate';
+import './functions/agents/AgentList';
+import './functions/agents/AgentDelete';
+import './functions/agents/AgentRoles';
+import './functions/agents/AgentStats';
 
 // Módulo de conocimiento
 import './functions/knowledge/DocumentUpload';
