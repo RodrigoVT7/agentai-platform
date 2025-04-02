@@ -1,3 +1,4 @@
+// src/functions/knowledge/DocumentManager.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { DocumentManagerHandler } from "../../shared/handlers/knowledge/documentManagerHandler";
 import { createLogger } from "../../shared/utils/logger";
@@ -75,7 +76,66 @@ export async function documentManager(request: HttpRequest, context: InvocationC
           };
         }
         
-        const actionData = await request.json();
+        // Verificar el Content-Type de la solicitud
+        const contentType = request.headers.get('content-type') || '';
+        
+        // Si es form-data, rechaza explícitamente (este endpoint no maneja archivos)
+        if (contentType.includes('multipart/form-data')) {
+          return {
+            status: 415, // Unsupported Media Type
+            jsonBody: { 
+              error: "Este endpoint no acepta form-data", 
+              message: "Para subir archivos, use /knowledge/documents/upload"
+            }
+          };
+        }
+        
+        // Para solicitudes JSON
+        if (!contentType.includes('application/json')) {
+          return {
+            status: 400,
+            jsonBody: { 
+              error: "Content-Type debe ser application/json" 
+            }
+          };
+        }
+        
+        // Intentar parsear JSON con seguridad
+        let actionData;
+        try {
+          // Obtener el cuerpo como texto para inspeccionar
+          const bodyText = await request.text();
+          logger.info(`Cuerpo de la solicitud: ${bodyText}`);
+          
+          // Intentar parsear JSON manualmente
+          if (!bodyText || bodyText.trim() === '') {
+            return {
+              status: 400,
+              jsonBody: { error: "El cuerpo de la solicitud está vacío" }
+            };
+          }
+          
+          try {
+            actionData = JSON.parse(bodyText);
+          } catch (parseError) {
+            return {
+              status: 400,
+              jsonBody: { 
+                error: "Error al parsear JSON. Asegúrate de enviar un JSON válido",
+                details: parseError instanceof Error ? parseError.message : String(parseError)
+              }
+            };
+          }
+        } catch (readError) {
+          logger.error(`Error al leer el cuerpo de la solicitud: ${readError}`);
+          return {
+            status: 400,
+            jsonBody: { 
+              error: "Error al leer el cuerpo de la solicitud",
+              details: readError instanceof Error ? readError.message : String(readError)
+            }
+          };
+        }
         
         // Verificar que actionData es un objeto y tiene la propiedad action
         if (!actionData || typeof actionData !== 'object') {
@@ -125,6 +185,6 @@ export async function documentManager(request: HttpRequest, context: InvocationC
 app.http('documentManager', {
   methods: ['GET', 'DELETE', 'POST'],
   authLevel: 'anonymous',
-  route: 'knowledge/documents/{id?}',
+  route: 'knowledge/documents/detail/{id?}',  // Cambiar a una ruta más específica
   handler: documentManager
 });

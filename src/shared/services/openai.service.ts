@@ -42,11 +42,16 @@ export class OpenAIService {
   private logger: Logger;
   private endpoint: string;
   private apiKey: string;
+  private EmbeddingsEndpoint: string;
+  private EmbeddingsapiKey: string;
+
   
   constructor(logger?: Logger) {
     this.logger = logger || createLogger();
-    this.endpoint = process.env.AZURE_OPENAI_ENDPOINT || '';
-    this.apiKey = process.env.AZURE_OPENAI_API_KEY || '';
+    this.endpoint = process.env.OPENAI_ENDPOINT || '';
+    this.apiKey = process.env.OPENAI_API_KEY || '';
+    this.EmbeddingsEndpoint = process.env.AZURE_EMBEDDINGS_ENDPOINT || '';
+    this.EmbeddingsapiKey = process.env.AZURE_EMBEDDINGS_API_KEY || '';
     
     if (!this.endpoint || !this.apiKey) {
       this.logger.error('Azure OpenAI credentials no configuradas correctamente');
@@ -65,11 +70,11 @@ export class OpenAIService {
       const truncatedText = text.length > 8000 ? text.substring(0, 8000) : text;
       
       // Hacer la solicitud HTTP directamente sin usar el cliente
-      const response = await fetch(`${this.endpoint}/openai/deployments/${AI_CONFIG.EMBEDDING_MODEL}/embeddings?api-version=2023-05-15`, {
+      const response = await fetch(`${this.EmbeddingsEndpoint}/openai/deployments/${AI_CONFIG.EMBEDDING_MODEL}/embeddings?api-version=2023-05-15`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'api-key': this.apiKey
+          'api-key': this.EmbeddingsapiKey
         },
         body: JSON.stringify({
           input: [truncatedText]

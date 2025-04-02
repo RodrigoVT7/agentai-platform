@@ -46,7 +46,7 @@ export const EMBEDDING_CONFIG = {
 };
 
 export const AI_CONFIG = {
-  EMBEDDING_MODEL: "text-embedding-ada-002",
+  EMBEDDING_MODEL: "embeddings",
   CHAT_MODEL: "gpt-4o",
   TEMPERATURE: 0.7,
   MAX_TOKENS: 4000
