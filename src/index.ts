@@ -37,6 +37,9 @@ import './functions/conversation/ConversationSearch';
 // Módulo de notificaciones
 import './functions/notifications/EmailSender';
 
+// Módulo de playground
+import './functions/playground/PlaygroundSession';
+
 // Configuración de la aplicación
 app.setup({
   enableHttpStream: true,

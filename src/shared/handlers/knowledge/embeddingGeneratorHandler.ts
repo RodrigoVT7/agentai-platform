@@ -19,65 +19,65 @@ export class EmbeddingGeneratorHandler {
     this.openaiService = new OpenAIService(this.logger);
   }
   
-  /**
+ /**
    * Procesa un mensaje de la cola y genera embeddings
    */
-  public async execute(message: EmbeddingQueueMessage): Promise<EmbeddingResult> {
-    const { chunkId, documentId, knowledgeBaseId, content, agentId } = message;
+ public async execute(message: EmbeddingQueueMessage): Promise<EmbeddingResult> {
+  const { chunkId, documentId, knowledgeBaseId, content, agentId } = message;
+  
+  try {
+    this.logger.info(`Generando embedding para chunk ${chunkId} del documento ${documentId}`);
     
-    try {
-      this.logger.info(`Generando embedding para chunk ${chunkId} del documento ${documentId}`);
-      
-      // Comprobar si este chunk ya tiene un embedding (para evitar duplicados)
-      const existingVector = await this.getExistingVector(chunkId, knowledgeBaseId);
-      
-      if (existingVector) {
-        this.logger.info(`El chunk ${chunkId} ya tiene un embedding. Omitiendo.`);
-        return {
-          chunkId,
-          documentId,
-          knowledgeBaseId,
-          success: true,
-          vector: existingVector.vector
-        };
-      }
-      
-      // Generar embedding
-      const vector = await this.openaiService.getEmbedding(content);
-      
-      if (!vector || vector.length === 0) {
-        throw createAppError(500, `Error al generar embedding para chunk ${chunkId}`);
-      }
-      
-      // Almacenar el vector en Table Storage
-      await this.storeVector(chunkId, documentId, knowledgeBaseId, vector, content);
-      
-      // Comprobar si todos los chunks tienen embedding y actualizar estado del documento
-      await this.checkDocumentCompletion(documentId, knowledgeBaseId);
-      
-      this.logger.info(`Embedding generado con éxito para chunk ${chunkId}`);
-      
+    // Comprobar si este chunk ya tiene un embedding (para evitar duplicados)
+    const existingVector = await this.getExistingVector(chunkId, knowledgeBaseId);
+    
+    if (existingVector) {
+      this.logger.info(`El chunk ${chunkId} ya tiene un embedding. Omitiendo.`);
       return {
         chunkId,
         documentId,
         knowledgeBaseId,
         success: true,
-        vector
-      };
-    } catch (error: unknown) {
-      this.logger.error(`Error al generar embedding para chunk ${chunkId}:`, error);
-      
-      // No actualizar documento a fallido si solo falla un chunk
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        chunkId,
-        documentId,
-        knowledgeBaseId,
-        success: false,
-        error: errorMessage || 'Error desconocido al generar embedding'
+        vector: existingVector.vector
       };
     }
+    
+    // Generar embedding
+    const vector = await this.openaiService.getEmbedding(content);
+    
+    if (!vector || vector.length === 0) {
+      throw createAppError(500, `Error al generar embedding para chunk ${chunkId}`);
+    }
+    
+    // Almacenar el vector en Table Storage
+    await this.storeVector(chunkId, documentId, knowledgeBaseId, vector, content);
+    
+    // Comprobar si todos los chunks tienen embedding y actualizar estado del documento
+    await this.checkDocumentCompletion(documentId, knowledgeBaseId, agentId);
+    
+    this.logger.info(`Embedding generado con éxito para chunk ${chunkId}`);
+    
+    return {
+      chunkId,
+      documentId,
+      knowledgeBaseId,
+      success: true,
+      vector
+    };
+  } catch (error: unknown) {
+    this.logger.error(`Error al generar embedding para chunk ${chunkId}:`, error);
+    
+    // No actualizar documento a fallido si solo falla un chunk
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      chunkId,
+      documentId,
+      knowledgeBaseId,
+      success: false,
+      error: errorMessage || 'Error desconocido al generar embedding'
+    };
   }
+}
   
   /**
    * Comprueba si un chunk ya tiene un vector
@@ -172,11 +172,13 @@ export class EmbeddingGeneratorHandler {
    * Comprueba si todos los chunks de un documento tienen embeddings
    * y actualiza el estado del documento si es así
    */
-  private async checkDocumentCompletion(documentId: string, knowledgeBaseId: string): Promise<void> {
+  private async checkDocumentCompletion(documentId: string, knowledgeBaseId: string, agentId: string): Promise<void> {
     try {
       // Obtener metadatos del documento procesado
       const containerClient = this.storageService.getBlobContainerClient(BLOB_CONTAINERS.PROCESSED_DOCUMENTS);
-      const metadataBlobClient = containerClient.getBlobClient(`${knowledgeBaseId}/${documentId}/metadata.json`);
+      
+      // CORRECCIÓN: Incluir agentId en la ruta
+      const metadataBlobClient = containerClient.getBlobClient(`${agentId}/${knowledgeBaseId}/${documentId}/metadata.json`);
       
       // Verificar si existe
       const exists = await metadataBlobClient.exists();

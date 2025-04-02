@@ -95,8 +95,11 @@ export class DocumentSearchHandler {
       
       // Obtener todos los vectores para la knowledge base especificada
       const vectors = tableClient.listEntities({
-        queryOptions: { filter: `partitionKey eq '${knowledgeBaseId}'` }
+        queryOptions: { filter: `PartitionKey eq '${knowledgeBaseId}'` }
       });
+
+      this.logger.info(`vectors: "${JSON.stringify(vectors)}"`);
+
       
       const matches: VectorMatch[] = [];
       
