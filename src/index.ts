@@ -40,6 +40,15 @@ import './functions/notifications/EmailSender';
 // Módulo de playground
 import './functions/playground/PlaygroundSession';
 
+// Módulo de integraciones
+import './functions/integrations/IntegrationCatalog';
+import './functions/integrations/IntegrationConfig';
+import './functions/integrations/WhatsAppIntegration';
+import './functions/integrations/GoogleCalendar';
+import './functions/integrations/MicrosoftGraph';
+import './functions/integrations/ERPConnector';
+import './functions/integrations/IntegrationExecutor';
+
 // Configuración de la aplicación
 app.setup({
   enableHttpStream: true,

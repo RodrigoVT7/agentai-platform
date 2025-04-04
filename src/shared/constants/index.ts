@@ -11,7 +11,10 @@
   USER_ROLES: "userroles",
   HANDOFFS: "handoffs",
   USAGE_STATS: "usagestats",
-  FEEDBACK: "feedback"
+  FEEDBACK: "feedback",
+  INTEGRATION_CATALOG: "integration_catalog",
+  INTEGRATIONS: "integrations",
+  INTEGRATION_LOGS: "integration_logs"
 };
 
 export const STORAGE_QUEUES = {
@@ -21,7 +24,8 @@ export const STORAGE_QUEUES = {
   EMBEDDING: "embedding-queue",
   CONVERSATION: "conversation-queue",
   COMPLETION: "completion-queue",
-  HANDOFF: "handoff-queue"
+  HANDOFF: "handoff-queue",
+  INTEGRATION: "integration-queue"
 };
 
 export const AUTH_CONFIG = {

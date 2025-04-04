@@ -7,7 +7,9 @@ import { createAppError } from "../../utils/error.utils";
 import { 
   Message, 
   MessageRole, 
-  ContextResult
+  ContextResult,
+  MessageStatus,
+  MessageType
 } from "../../models/conversation.model";
 import { SearchQuery } from "../../models/search.model";
 
@@ -92,26 +94,74 @@ export class ContextRetrieverHandler {
     try {
       const tableClient = this.storageService.getTableClient(STORAGE_TABLES.MESSAGES);
       
+      // Recuperar solo mensajes no fallidos
       const messages: Message[] = [];
       const messagesEntities = await tableClient.listEntities({
         queryOptions: { 
-          filter: `PartitionKey eq '${conversationId}'`,
+          filter: `PartitionKey eq '${conversationId}' and status ne 'failed'`
         }
       });
       
       for await (const entity of messagesEntities) {
-        messages.push(entity as unknown as Message);
+        // Convertir entity a Message con validación de tipos
+        const message: Message = {
+          id: entity.id as string,
+          conversationId: entity.conversationId as string,
+          content: entity.content as string,
+          role: entity.role as MessageRole,
+          senderId: entity.senderId as string,
+          // Asegurar que timestamp sea numérico
+          timestamp: this.getNumberValue(entity.timestamp),
+          responseTime: entity.responseTime as number,
+          status: entity.status as MessageStatus,
+          messageType: entity.messageType as MessageType,
+          contentType: entity.contentType as string,
+          attachments: entity.attachments as Record<string, any>,
+          metadata: entity.metadata as Record<string, any>,
+          createdAt: this.getNumberValue(entity.createdAt)
+        };
+        
+        messages.push(message);
       }
       
-      // Ordenar por timestamp y limitar a los últimos N mensajes
-      return messages
-        .sort((a, b) => a.timestamp - b.timestamp)
+      // Ordenar con lógica mejorada - primero por createdAt, luego por timestamp
+      const sortedMessages = messages
+        .sort((a, b) => {
+          // Si createdAt es diferente, ordenar por createdAt
+          if (a.createdAt !== b.createdAt) {
+            return a.createdAt - b.createdAt;
+          }
+          // Si createdAt es igual, ordenar por timestamp
+          return a.timestamp - b.timestamp;
+        })
         .slice(-this.maxContextMessages);
       
+      this.logger.debug(`Recuperados ${sortedMessages.length} mensajes para conversación ${conversationId}`);
+      
+      // Registrar resumen de los mensajes para debugging
+      this.logger.debug(`Secuencia de mensajes: ${sortedMessages.map(msg => 
+        `${msg.id.substring(0,6)}(${msg.role})`).join(' -> ')}`);
+      
+      return sortedMessages;
     } catch (error) {
       this.logger.error(`Error al obtener historial de conversación ${conversationId}:`, error);
       return [];
     }
+  }
+  
+  /**
+   * Convierte cualquier valor a número de forma segura
+   */
+  private getNumberValue(value: unknown): number {
+    if (typeof value === 'number') {
+      return value;
+    } else if (typeof value === 'string') {
+      const num = parseInt(value, 10);
+      return isNaN(num) ? Date.now() : num; // usar tiempo actual como fallback
+    } else if (value instanceof Date) {
+      return value.getTime();
+    }
+    return Date.now(); // valor por defecto si no se puede convertir
   }
   
   private async getAgentSystemInstructions(agentId: string): Promise<string> {
