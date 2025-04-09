@@ -181,7 +181,16 @@ export async function MicrosoftGraph(request: HttpRequest, context: InvocationCo
           }
           
           const eventData = await request.json();
-          const eventId = eventData.eventId;
+          
+          // Corregido: Verificar que eventData tiene la propiedad eventId antes de usarla
+          if (!eventData || typeof eventData !== 'object' || !('eventId' in eventData)) {
+            return {
+              status: 400,
+              jsonBody: { error: "Se requiere ID del evento (eventId)" }
+            };
+          }
+          
+          const eventId = eventData.eventId as string;
           
           if (!eventId) {
             return {
