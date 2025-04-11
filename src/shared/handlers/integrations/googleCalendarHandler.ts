@@ -221,9 +221,13 @@ export class GoogleCalendarHandler {
             jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error }
           };
         }
-        // Actualizar config con nuevos tokens
-        config.accessToken = refreshResult.accessToken;
-        config.expiresAt = refreshResult.expiresAt;
+        // Actualizar config con nuevos tokens con manejo adecuado de tipos opcionales
+        if (refreshResult.accessToken) {
+          config.accessToken = refreshResult.accessToken;
+        }
+        if (refreshResult.expiresAt) {
+          config.expiresAt = refreshResult.expiresAt;
+        }
       }
       
       // Crear cliente OAuth
@@ -335,9 +339,13 @@ export class GoogleCalendarHandler {
             jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error }
           };
         }
-        // Actualizar config con nuevos tokens
-        config.accessToken = refreshResult.accessToken;
-        config.expiresAt = refreshResult.expiresAt;
+        // Actualizar config con nuevos tokens con manejo adecuado de tipos opcionales
+        if (refreshResult.accessToken) {
+          config.accessToken = refreshResult.accessToken;
+        }
+        if (refreshResult.expiresAt) {
+          config.expiresAt = refreshResult.expiresAt;
+        }
       }
       
       // Crear cliente OAuth
@@ -717,9 +725,13 @@ export class GoogleCalendarHandler {
             jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error }
           };
         }
-        // Actualizar config con nuevos tokens
-        config.accessToken = refreshResult.accessToken;
-        config.expiresAt = refreshResult.expiresAt;
+        // Actualizar config con nuevos tokens con manejo adecuado de tipos opcionales
+        if (refreshResult.accessToken) {
+          config.accessToken = refreshResult.accessToken;
+        }
+        if (refreshResult.expiresAt) {
+          config.expiresAt = refreshResult.expiresAt;
+        }
       }
       
       // Crear cliente OAuth
@@ -819,9 +831,13 @@ export class GoogleCalendarHandler {
             jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error }
           };
         }
-        // Actualizar config con nuevos tokens
-        config.accessToken = refreshResult.accessToken;
-        config.expiresAt = refreshResult.expiresAt;
+        // Actualizar config con nuevos tokens con manejo adecuado de tipos opcionales
+        if (refreshResult.accessToken) {
+          config.accessToken = refreshResult.accessToken;
+        }
+        if (refreshResult.expiresAt) {
+          config.expiresAt = refreshResult.expiresAt;
+        }
       }
       
       // Crear cliente OAuth
@@ -928,9 +944,13 @@ export class GoogleCalendarHandler {
             jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error }
           };
         }
-        // Actualizar config con nuevos tokens
-        config.accessToken = refreshResult.accessToken;
-        config.expiresAt = refreshResult.expiresAt;
+        // Actualizar config con nuevos tokens con manejo adecuado de tipos opcionales
+        if (refreshResult.accessToken) {
+          config.accessToken = refreshResult.accessToken;
+        }
+        if (refreshResult.expiresAt) {
+          config.expiresAt = refreshResult.expiresAt;
+        }
       }
       
       // Crear cliente OAuth

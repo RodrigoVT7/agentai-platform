@@ -5,6 +5,7 @@ import { IntegrationExecutorValidator } from "../../shared/validators/integratio
 import { createLogger } from "../../shared/utils/logger";
 import { toAppError } from "../../shared/utils/error.utils";
 import { JwtService } from "../../shared/utils/jwt.service";
+import { IntegrationAction } from "../../shared/models/integration.model";
 
 export async function IntegrationExecutor(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   const logger = createLogger(context);
@@ -55,18 +56,30 @@ export async function IntegrationExecutor(request: HttpRequest, context: Invocat
     
     // Obtener datos del cuerpo
     const executionData = await request.json();
-    
-    // Validar datos
-    const validation = await validator.validate(executionData, userId);
-    if (!validation.isValid) {
-      return {
-        status: 400,
-        jsonBody: { error: "Datos inválidos", details: validation.errors }
-      };
-    }
+
+// Validar datos y cast adecuado
+if (!executionData || 
+    typeof executionData !== 'object' || 
+    !('integrationId' in executionData) || 
+    !('action' in executionData) || 
+    !('parameters' in executionData)) {
+  return {
+    status: 400,
+    jsonBody: { error: "Formato de datos inválido" }
+  };
+}
+
+// Validar datos
+const validation = await validator.validate(executionData, userId);
+if (!validation.isValid) {
+  return {
+    status: 400,
+    jsonBody: { error: "Datos inválidos", details: validation.errors }
+  };
+}
     
     // Ejecutar integración
-    const result = await handler.execute(executionData, userId);
+    const result = await handler.execute(executionData as IntegrationAction, userId);
     
     return {
       status: 200,

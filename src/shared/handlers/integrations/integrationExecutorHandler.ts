@@ -173,8 +173,12 @@ export class IntegrationExecutorHandler {
       if (error && typeof error === 'object' && 'statusCode' in error) {
         return {
           success: false,
-          error: error.message || "Error al ejecutar acción",
-          details: error.details || undefined
+          error: typeof error === 'object' && 'message' in error 
+            ? String(error.message) 
+            : "Error al ejecutar acción",
+          details: typeof error === 'object' && 'details' in error 
+            ? error.details 
+            : undefined
         };
       }
       
