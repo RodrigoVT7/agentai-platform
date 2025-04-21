@@ -147,7 +147,7 @@ export class ERPConnectorHandler {
         };
       }
       
-      const config = integration.config as IntegrationERPConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationERPConfig;
       
       // Filtrar esquemas disponibles
       let entities: any[] = [];
@@ -245,7 +245,7 @@ export class ERPConnectorHandler {
         };
       }
       
-      const config = integration.config as IntegrationERPConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationERPConfig;
       
       // Construir consulta para el ERP
       // Aquí implementaríamos la lógica específica para cada tipo de ERP
@@ -336,7 +336,7 @@ export class ERPConnectorHandler {
         };
       }
       
-      const config = integration.config as IntegrationERPConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationERPConfig;
       
       // Probar conexión según tipo de ERP
       let isConnected = false;
@@ -499,7 +499,7 @@ export class ERPConnectorHandler {
         description: description || `Integración con ${type || 'ERP genérico'}`,
         type: IntegrationType.ERP,
         provider: type || 'generic',
-        config,
+        config: JSON.stringify(config),
         credentials,
         status: IntegrationStatus.CONFIGURED,
         createdBy: userId,
@@ -564,7 +564,7 @@ export class ERPConnectorHandler {
       }
       
       // Obtener configuración actual
-      const config = integration.config as IntegrationERPConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationERPConfig;
       
       // Actualizar campos de configuración
       const updatedConfig: IntegrationERPConfig = {
@@ -711,7 +711,7 @@ export class ERPConnectorHandler {
         };
       }
       
-      const config = integration.config as IntegrationERPConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationERPConfig;
       
       // Crear registro en el ERP
       try {
@@ -812,7 +812,7 @@ export class ERPConnectorHandler {
         };
       }
       
-      const config = integration.config as IntegrationERPConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationERPConfig;
       
       // Actualizar registro en el ERP
       try {
@@ -912,7 +912,7 @@ export class ERPConnectorHandler {
         };
       }
       
-      const config = integration.config as IntegrationERPConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationERPConfig;
       
       // Eliminar registro en el ERP
       try {
@@ -1003,7 +1003,7 @@ export class ERPConnectorHandler {
         };
       }
       
-      const config = integration.config as IntegrationERPConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationERPConfig;
       
       // Ejecutar consulta personalizada en el ERP
       try {

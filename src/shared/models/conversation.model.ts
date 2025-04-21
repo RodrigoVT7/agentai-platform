@@ -119,3 +119,26 @@ export interface Conversation {
     }>;
     systemInstructions: string;
   }
+
+  export interface IntegrationInfo { // Nueva interfaz auxiliar
+    id: string;
+    name: string;
+    type: string; // Debería ser IntegrationType pero usamos string por simplicidad aquí
+    provider: string;
+  }
+
+  export interface ContextResult {
+    relevantChunks: Array<{
+      content: string;
+      documentId: string;
+      chunkId: string;
+      similarity: number;
+    }>;
+    conversationContext: Array<{
+      role: MessageRole;
+      content: string;
+    }>;
+    systemInstructions: string;
+    activeIntegrations?: IntegrationInfo[]; // <-- Campo añadido
+  }
+  

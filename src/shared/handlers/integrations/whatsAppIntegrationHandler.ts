@@ -44,7 +44,7 @@ export class WhatsAppIntegrationHandler {
       
       // Verificar estado actual con la API de WhatsApp
       try {
-        const config = integration.config as IntegrationWhatsAppConfig;
+        const config = JSON.parse(integration.config as string) as IntegrationWhatsAppConfig;
         const response = await fetch(
           `https://graph.facebook.com/v18.0/${config.phoneNumberId}?fields=verified_name,quality_rating,display_phone_number`,
           {
@@ -241,7 +241,7 @@ export class WhatsAppIntegrationHandler {
         description: `Integración con WhatsApp para el número ${phoneNumber}`,
         type: IntegrationType.MESSAGING,
         provider: 'whatsapp',
-        config,
+        config: JSON.stringify(config),
         credentials: accessToken, // En producción, encriptar
         status: IntegrationStatus.CONFIGURED,
         createdBy: userId,
@@ -302,7 +302,7 @@ export class WhatsAppIntegrationHandler {
       }
       
       // Obtener configuración
-      const config = integration.config as IntegrationWhatsAppConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationWhatsAppConfig;
       
       // Preparar mensaje según tipo
       let payload: any;
@@ -457,7 +457,7 @@ export class WhatsAppIntegrationHandler {
       }
       
       // Actualizar configuración
-      const config = integration.config as IntegrationWhatsAppConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationWhatsAppConfig;
       const updatedConfig: IntegrationWhatsAppConfig = {
         ...config,
         displayName: data.displayName || config.displayName,
