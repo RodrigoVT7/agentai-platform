@@ -12,9 +12,9 @@
   HANDOFFS: "handoffs",
   USAGE_STATS: "usagestats",
   FEEDBACK: "feedback",
-  INTEGRATION_CATALOG: "integration_catalog",
+  INTEGRATION_CATALOG: "integrationcatalog",
   INTEGRATIONS: "integrations",
-  INTEGRATION_LOGS: "integration_logs"
+  INTEGRATION_LOGS: "integrationlogs"
 };
 
 export const STORAGE_QUEUES = {

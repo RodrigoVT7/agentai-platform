@@ -146,29 +146,36 @@ export class ChatCompletionHandler {
      * CORREGIDO: Se enfoca en identificar correctamente el último mensaje válido del usuario.
      */
     private prepareCompletionMessages(context: ContextResult): { messages: Array<{ role: "system" | "user" | "assistant"; content: string }>, latestUserQuery: string | null } {
-        const MAX_RECENT_MESSAGES = 6; // Número de mensajes recientes a incluir (e.g., 3 intercambios)
+        const MAX_RECENT_MESSAGES = 6;
 
-        // 1. Obtener historial reciente y válido
+        // 1. Obtener historial reciente y válido y última pregunta del usuario
         const { recentValidMessages, latestUserMessage } = this.getRecentValidMessages(context.conversationContext, MAX_RECENT_MESSAGES);
-
         const latestUserQuery = latestUserMessage ? latestUserMessage.content : null;
 
         this.logger.info(`Última pregunta de usuario identificada: ${latestUserQuery ? `"${latestUserQuery.substring(0, 50)}..."` : 'Ninguna'}`);
-        if (latestUserMessage) {
-             this.logger.debug(`Detalles último mensaje usuario: ID=${latestUserMessage.id}, Timestamp=${latestUserMessage.timestamp}`);
+
+        // 2. Construir el prompt del sistema
+        let systemContent = context.systemInstructions || "Eres un asistente útil.";
+
+        // 3. Añadir información sobre integraciones activas
+        if (context.activeIntegrations && context.activeIntegrations.length > 0) {
+            systemContent += "\n\n### Capacidades e Integraciones Activas:\n";
+            systemContent += "Actualmente tienes las siguientes integraciones activas:\n";
+            context.activeIntegrations.forEach(int => {
+                systemContent += `- ${int.name} (${int.provider} - ${int.type})\n`;
+                // Podrías añadir capacidades específicas aquí si las tuvieras disponibles
+            });
+             systemContent += "Puedes usar estas integraciones si la conversación lo requiere.\n";
+            systemContent += "### Fin de Capacidades\n";
+        } else {
+            systemContent += "\n\nActualmente no tienes integraciones externas activas.\n";
         }
 
-        // 2. Construir el prompt para OpenAI
-        const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
-
-        // 3. Añadir instrucciones del sistema base
-        let systemContent = context.systemInstructions || "Eres un asistente útil."; // Instrucción por defecto
 
         // 4. Añadir chunks de conocimiento relevantes si existen
         if (context.relevantChunks && context.relevantChunks.length > 0) {
             systemContent += "\n\n### Información Relevante del Contexto:\n";
             context.relevantChunks.forEach((chunk, index) => {
-                // Incluir solo si la similitud es razonable (ajustar umbral según sea necesario)
                 if (chunk.similarity > 0.7) {
                      systemContent += `--- INICIO Documento ${index + 1} (Similitud: ${chunk.similarity.toFixed(2)}) ---\n${chunk.content}\n--- FIN Documento ${index + 1} ---\n\n`;
                 }
@@ -176,13 +183,16 @@ export class ChatCompletionHandler {
             systemContent += "### Fin de la Información Relevante\n";
         }
 
-        // 5. Añadir el prompt del sistema inicial
+        // 5. Preparar la lista final de mensajes para OpenAI
+        const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
+
+        // Añadir el prompt del sistema compilado
         messages.push({
             role: 'system',
             content: systemContent
         });
 
-        // 6. Añadir el historial reciente de mensajes válidos
+        // Añadir el historial reciente de mensajes válidos
         messages.push(...recentValidMessages.map(msg => ({
             role: this.mapRoleToOpenAI(msg.role),
             content: msg.content

@@ -147,13 +147,15 @@ export class GoogleCalendarHandler {
         description: `Integración con Google Calendar (${primaryCalendar.summary})`,
         type: IntegrationType.CALENDAR,
         provider: 'google',
-        config,
+        config: JSON.stringify(config),
         credentials: tokens.refresh_token || tokens.access_token || '',
         status: IntegrationStatus.ACTIVE,
         createdBy: userId,
         createdAt: now,
         isActive: true
       };
+
+      console.log(integration)
       
       // Guardar en Table Storage
       const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
@@ -210,7 +212,7 @@ export class GoogleCalendarHandler {
         };
       }
       
-      const config = integration.config as IntegrationGoogleCalendarConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationGoogleCalendarConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -328,7 +330,7 @@ export class GoogleCalendarHandler {
         };
       }
       
-      const config = integration.config as IntegrationGoogleCalendarConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationGoogleCalendarConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -419,7 +421,7 @@ export class GoogleCalendarHandler {
       
       // No devolver credenciales sensibles
       const { credentials, ...safeIntegration } = integration;
-      const config = safeIntegration.config as IntegrationGoogleCalendarConfig;
+      const config = JSON.parse(safeIntegration.config as string) as IntegrationGoogleCalendarConfig;
       
       // Eliminar tokens del objeto de configuración para la respuesta
       const sanitizedConfig = {
@@ -498,7 +500,7 @@ export class GoogleCalendarHandler {
         description: description || "Integración con Google Calendar",
         type: IntegrationType.CALENDAR,
         provider: 'google',
-        config,
+        config: JSON.stringify(config),
         credentials: refreshToken || accessToken,
         status: IntegrationStatus.ACTIVE,
         createdBy: userId,
@@ -563,7 +565,7 @@ export class GoogleCalendarHandler {
       }
       
       // Obtener configuración actual
-      const config = integration.config as IntegrationGoogleCalendarConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationGoogleCalendarConfig;
       
       // Actualizar campos de configuración
       const updatedConfig: IntegrationGoogleCalendarConfig = {
@@ -659,7 +661,7 @@ export class GoogleCalendarHandler {
       
       // También revocar tokens si es posible
       try {
-        const config = integration.config as IntegrationGoogleCalendarConfig;
+        const config = JSON.parse(integration.config as string) as IntegrationGoogleCalendarConfig;
         if (config.accessToken) {
           await this.revokeToken(config.accessToken);
         }
@@ -714,7 +716,7 @@ export class GoogleCalendarHandler {
         };
       }
       
-      const config = integration.config as IntegrationGoogleCalendarConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationGoogleCalendarConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -820,7 +822,7 @@ export class GoogleCalendarHandler {
         };
       }
       
-      const config = integration.config as IntegrationGoogleCalendarConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationGoogleCalendarConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -933,7 +935,7 @@ export class GoogleCalendarHandler {
         };
       }
       
-      const config = integration.config as IntegrationGoogleCalendarConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationGoogleCalendarConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -1053,7 +1055,7 @@ export class GoogleCalendarHandler {
     error?: string; 
   }> {
     try {
-      const config = integration.config as IntegrationGoogleCalendarConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationGoogleCalendarConfig;
       
       // Verificar que tenemos refresh token
       if (!config.refreshToken) {

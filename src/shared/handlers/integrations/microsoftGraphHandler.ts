@@ -147,7 +147,7 @@ export class MicrosoftGraphHandler {
         description: `Integración con Microsoft 365 (${userInfo.displayName})`,
         type: IntegrationType.CALENDAR, // Por defecto, puede actualizarse después
         provider: 'microsoft',
-        config,
+        config: JSON.stringify(config),
         credentials: tokens.refresh_token || tokens.access_token || '',
         status: IntegrationStatus.ACTIVE,
         createdBy: userId,
@@ -210,7 +210,7 @@ export class MicrosoftGraphHandler {
         };
       }
       
-      const config = integration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationMicrosoftConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -325,7 +325,7 @@ export class MicrosoftGraphHandler {
         };
       }
       
-      const config = integration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationMicrosoftConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -413,7 +413,7 @@ export class MicrosoftGraphHandler {
       
       // No devolver credenciales sensibles
       const { credentials, ...safeIntegration } = integration;
-      const config = safeIntegration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(safeIntegration.config as string) as IntegrationMicrosoftConfig;
       
       // Eliminar tokens del objeto de configuración para la respuesta
       const sanitizedConfig = {
@@ -496,7 +496,7 @@ export class MicrosoftGraphHandler {
         description: description || "Integración con Microsoft 365",
         type,
         provider: 'microsoft',
-        config,
+        config: JSON.stringify(config),
         credentials: refreshToken || accessToken,
         status: IntegrationStatus.ACTIVE,
         createdBy: userId,
@@ -561,7 +561,7 @@ export class MicrosoftGraphHandler {
       }
       
       // Obtener configuración actual
-      const config = integration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationMicrosoftConfig;
       
       // Actualizar campos de configuración
       const updatedConfig: IntegrationMicrosoftConfig = {
@@ -702,7 +702,7 @@ export class MicrosoftGraphHandler {
         };
       }
       
-      const config = integration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationMicrosoftConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -806,7 +806,7 @@ export class MicrosoftGraphHandler {
         };
       }
       
-      const config = integration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationMicrosoftConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -911,7 +911,7 @@ export class MicrosoftGraphHandler {
         };
       }
       
-      const config = integration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationMicrosoftConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -993,7 +993,7 @@ export class MicrosoftGraphHandler {
         };
       }
       
-      const config = integration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationMicrosoftConfig;
       
       // Verificar si el token ha expirado y actualizarlo si es necesario
       if (config.expiresAt < Date.now()) {
@@ -1136,7 +1136,7 @@ export class MicrosoftGraphHandler {
     error?: string; 
   }> {
     try {
-      const config = integration.config as IntegrationMicrosoftConfig;
+      const config = JSON.parse(integration.config as string) as IntegrationMicrosoftConfig;
       
       // Verificar que tenemos refresh token
       if (!config.refreshToken) {

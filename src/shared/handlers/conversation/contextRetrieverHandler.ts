@@ -9,9 +9,11 @@ import {
   MessageRole, 
   ContextResult,
   MessageStatus,
-  MessageType
+  MessageType,
+  IntegrationInfo
 } from "../../models/conversation.model";
 import { SearchQuery } from "../../models/search.model";
+import {IntegrationStatus } from "../../models/integration.model";
 
 interface QueueMessage {
   messageId: string;
@@ -54,16 +56,20 @@ export class ContextRetrieverHandler {
       // 4. Buscar contenido relevante en la base de conocimiento
       const relevantChunks = await this.searchRelevantContent(agentId, currentMessage.content);
       
-      // 5. Generar contexto completo
+       // 5. NUEVO: Obtener integraciones activas del agente
+       const activeIntegrations = await this.getActiveIntegrations(agentId);
+
+      // 6. Generar contexto completo (incluyendo integraciones)
       const context: ContextResult = {
         relevantChunks,
         conversationContext: this.formatConversationContext(conversationHistory),
-        systemInstructions
+        systemInstructions,
+        activeIntegrations // <-- Añadido
       };
-      
-      // 6. Encolar para generación de respuesta
+
+      // 7. Encolar para generación de respuesta
       await this.queueForCompletion(context, messageId, conversationId, agentId, userId);
-      
+
       return;
     } catch (error) {
       this.logger.error(`Error al procesar contexto para mensaje ${messageId}:`, error);
@@ -76,6 +82,35 @@ export class ContextRetrieverHandler {
       // En otro caso, crear un AppError genérico
       throw createAppError(500, `Error al procesar contexto: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * Obtiene las integraciones activas para un agente específico.
+   */
+  private async getActiveIntegrations(agentId: string): Promise<IntegrationInfo[]> {
+    const activeIntegrations: IntegrationInfo[] = [];
+    try {
+      const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
+      const integrations = tableClient.listEntities({
+        queryOptions: {
+          filter: `PartitionKey eq '${agentId}' and status eq '${IntegrationStatus.ACTIVE}' and isActive eq true`
+        }
+      });
+
+      for await (const integration of integrations) {
+        activeIntegrations.push({
+          id: integration.id as string,
+          name: integration.name as string,
+          type: integration.type as string,
+          provider: integration.provider as string,
+        });
+      }
+      this.logger.debug(`Encontradas ${activeIntegrations.length} integraciones activas para el agente ${agentId}`);
+    } catch (error) {
+      this.logger.error(`Error al obtener integraciones activas para el agente ${agentId}:`, error);
+      // No lanzar error, simplemente devolver lista vacía
+    }
+    return activeIntegrations;
   }
   
   private async getCurrentMessage(conversationId: string, messageId: string): Promise<Message | null> {

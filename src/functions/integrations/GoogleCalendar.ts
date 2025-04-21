@@ -248,79 +248,111 @@ export async function GoogleCalendar(request: HttpRequest, context: InvocationCo
   }
 }
 
-// Función para manejar callback de autorización de Google
+/**
+ * Función auxiliar para manejar el callback de autorización de Google.
+ * MODIFICADA PARA DEVOLVER JSON EN LUGAR DE REDIRECCIONES (Backend-Only).
+ */
 async function handleGoogleAuthCallback(request: HttpRequest, logger: any): Promise<HttpResponseInit> {
   try {
-    // Obtener código de autorización
+    // Obtener parámetros de la URL de callback
     const code = request.query.get('code');
     const state = request.query.get('state');
-    const error = request.query.get('error');
-    
+    const error = request.query.get('error'); // Error devuelto por Google
+
+    // 1. Manejo de errores devueltos directamente por Google
     if (error) {
       logger.warn(`Error en callback de Google: ${error}`);
-      // Redirigir a frontend con error
+      // Devolver respuesta JSON de error
       return {
-        status: 302,
-        headers: {
-          "Location": `${process.env.FRONTEND_URL}/integrations/google/error?error=${error}`
+        status: 400, // Bad Request (o 401 Unauthorized, dependiendo del error)
+        jsonBody: {
+          success: false,
+          message: "Autorización de Google fallida",
+          error: error,
+          details: request.query.get('error_description') || 'Google devolvió un error.'
         }
       };
     }
-    
+
+    // 2. Validar que 'code' y 'state' estén presentes
     if (!code || !state) {
       logger.warn(`Callback de Google incompleto: code=${code}, state=${state}`);
       return {
-        status: 400,
-        jsonBody: { error: "Parámetros faltantes en callback" }
+        status: 400, // Bad Request
+        jsonBody: {
+          success: false,
+          error: "Callback de Google incompleto",
+          message: "Faltan los parámetros 'code' o 'state' en la solicitud de callback."
+         }
       };
     }
-    
-    // Decodificar state (contiene userId y agentId)
+
+    // 3. Decodificar 'state'
     let stateData;
     try {
       stateData = JSON.parse(Buffer.from(state, 'base64').toString());
     } catch (e) {
-      logger.error(`Error al decodificar state: ${e}`);
+      const decodeError = e instanceof Error ? e.message : String(e);
+      logger.error(`Error al decodificar state: ${decodeError}`);
       return {
-        status: 400,
-        jsonBody: { error: "State inválido" }
+        status: 400, // Bad Request
+        jsonBody: {
+          success: false,
+          error: "State inválido",
+          message: "El parámetro 'state' recibido no es válido o está corrupto.",
+          details: decodeError
+         }
       };
     }
-    
+
+    // 4. Validar contenido de 'state'
     const { userId, agentId } = stateData;
-    
     if (!userId || !agentId) {
       logger.warn(`State inválido en callback: ${state}`);
       return {
-        status: 400,
-        jsonBody: { error: "State no contiene datos necesarios" }
+        status: 400, // Bad Request
+        jsonBody: {
+          success: false,
+          error: "State inválido",
+          message: "El parámetro 'state' no contiene la información necesaria (userId, agentId)."
+         }
       };
     }
-    
-    // Procesar código de autorización
+
+    // 5. Procesar el código de autorización (intercambiar por tokens, guardar integración)
+    // Se asume que GoogleCalendarHandler está disponible y configurado
     const handler = new GoogleCalendarHandler(logger);
+    // processAuthCode debería devolver { integrationId: string } en caso de éxito o lanzar un error
     const result = await handler.processAuthCode(code, userId, agentId);
-    
-    // Redirigir a frontend con resultado
+
+    // 6. Devolver respuesta JSON de éxito
+    logger.info(`Integración Google Calendar ${result.integrationId} configurada exitosamente para agente ${agentId}`);
     return {
-      status: 302,
-      headers: {
-        "Location": `${process.env.FRONTEND_URL}/integrations/google/success?integrationId=${result.integrationId}`
+      status: 200, // OK
+      jsonBody: {
+        success: true,
+        message: "Integración con Google Calendar configurada exitosamente.",
+        integrationId: result.integrationId,
+        agentId: agentId
       }
     };
-  } catch (error) {
-    logger.error("Error en callback de Google:", error);
-    
-    // Redirigir a frontend con error
+
+  } catch (error: unknown) { // 7. Manejo de errores internos durante el procesamiento del callback
+    logger.error("Error interno en callback de Google:", error);
+    const appError = toAppError(error); // Convierte a tu formato de error estándar
+
+    // Devolver respuesta JSON de error interno
     return {
-      status: 302,
-      headers: {
-        "Location": `${process.env.FRONTEND_URL}/integrations/google/error?error=server_error`
+      status: appError.statusCode || 500, // Internal Server Error (o el código del error si es específico)
+      jsonBody: {
+        success: false,
+        message: "Error interno del servidor al procesar el callback de Google.",
+        error: appError.message,
+        details: appError.details // Incluye detalles adicionales si están disponibles
       }
     };
   }
 }
-
 app.http('GoogleCalendar', {
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   authLevel: 'anonymous',

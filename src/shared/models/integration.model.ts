@@ -6,7 +6,7 @@ export interface Integration {
     description?: string;
     type: IntegrationType;
     provider: string;
-    config: Record<string, any>;
+    config: string;
     credentials: string; // Encrypted credentials
     status: IntegrationStatus;
     createdBy: string;
