@@ -39,9 +39,7 @@ export class QuestionnaireSubmissionHandler {
           return await this.createQuestionnaireSubmission(data);
 
         case "GET":
-          return id
-            ? await this.getQuestionnaireSubmission(id)
-            : await this.listQuestionnaireSubmissions(data);
+          return await this.listQuestionnaireSubmissions(data);
 
         case "PUT":
           if (!id) {
@@ -67,29 +65,6 @@ export class QuestionnaireSubmissionHandler {
         default:
           throw createAppError(400, `Método no soportado: ${method}`);
       }
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  /**
-   * Obtiene un cuestionario por su ID
-   */
-  private async getQuestionnaireSubmission(
-    id: string
-  ): Promise<QuestionnaireSubmission> {
-    try {
-      const entity = await this.cosmosService.getItem<QuestionnaireSubmission>(
-        this.CONTAINER_NAME,
-        id,
-        id
-      );
-
-      if (!entity) {
-        throw createAppError(404, "Cuestionario no encontrado");
-      }
-
-      return entity;
     } catch (error) {
       throw error;
     }

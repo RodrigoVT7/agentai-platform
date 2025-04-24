@@ -7,7 +7,11 @@ import {
 import { createLogger } from "../../shared/utils/logger";
 import { toAppError } from "../../shared/utils/error.utils";
 import { JwtService } from "../../shared/utils/jwt.service";
-import { QuestionnaireSubmissionCreateRequest } from "../../shared/models/questionnaireSubmission.model";
+import {
+  QuestionnaireSubmissionCreateRequest,
+  QuestionnaireSubmissionUpdateRequest,
+  QuestionnaireSubmissionSubmitRequest,
+} from "../../shared/models/questionnaireSubmission.model";
 import { QuestionnaireSubmissionHandler } from "../../shared/handlers/knowledge/questionnaireSubmissionHandler";
 
 /**
@@ -44,14 +48,23 @@ export async function QuestionnaireSubmission(
       };
     }
 
-    // Questionnaire data processing
-    const questionnaireData =
-      (await request.json()) as QuestionnaireSubmissionCreateRequest;
-
     // Execute requested CRUD operation
     const handler = new QuestionnaireSubmissionHandler();
     const method = request.method;
     const id = request.params.id;
+
+    // Questionnaire data processing
+    let questionnaireData:
+      | QuestionnaireSubmissionCreateRequest
+      | QuestionnaireSubmissionUpdateRequest
+      | QuestionnaireSubmissionSubmitRequest
+      | Record<string, never> = {};
+    if (method === "POST" || method === "PUT" || method === "SUBMIT") {
+      questionnaireData = (await request.json()) as
+        | QuestionnaireSubmissionCreateRequest
+        | QuestionnaireSubmissionUpdateRequest
+        | QuestionnaireSubmissionSubmitRequest;
+    }
 
     const result = await handler.execute(questionnaireData, method, id);
 
