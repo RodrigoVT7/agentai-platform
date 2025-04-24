@@ -5,16 +5,10 @@ import { Logger, createLogger } from "../../utils/logger";
 import { createAppError } from "../../utils/error.utils";
 import {
   QuestionnaireSubmission,
-  QuestionnaireSubmissionResponse,
   QuestionnaireSubmissionCreateRequest,
   QuestionnaireSubmissionUpdateRequest,
-  QuestionnaireSubmissionSubmitRequest,
   QuestionnaireSubmissionSearchParams,
-  Question,
-  QuestionType,
-  Answer,
 } from "../../models/questionnaireSubmission.model";
-import { STORAGE_CONTAINERS } from "../../constants";
 import { QuestionnaireSubmissionValidator } from "../../validators/knowledge/questionnaireSubmissionValidator";
 
 export class QuestionnaireSubmissionHandler {
@@ -29,9 +23,7 @@ export class QuestionnaireSubmissionHandler {
     this.logger = logger || createLogger();
   }
 
-  /**
-   * Ejecuta la operación solicitada en el cuestionario
-   */
+  // Main entry point for all questionnaire operations
   async execute(data: any, method: string, id?: string): Promise<any> {
     try {
       switch (method) {
@@ -45,7 +37,7 @@ export class QuestionnaireSubmissionHandler {
           if (!id) {
             throw createAppError(
               400,
-              "Se requiere ID del cuestionario para actualizar"
+              "Questionnaire ID is required for update"
             );
           }
           return await this.updateQuestionnaireSubmission(id, data);
@@ -54,30 +46,23 @@ export class QuestionnaireSubmissionHandler {
           if (!id) {
             throw createAppError(
               400,
-              "Se requiere ID del cuestionario para eliminar"
+              "Questionnaire ID is required for deletion"
             );
           }
           return await this.deleteQuestionnaireSubmission(id);
 
-        case "SUBMIT":
-          return await this.submitQuestionnaireSubmission(data);
-
         default:
-          throw createAppError(400, `Método no soportado: ${method}`);
+          throw createAppError(400, `Unsupported method: ${method}`);
       }
     } catch (error) {
       throw error;
     }
   }
 
-  /**
-   * Lista cuestionarios según los criterios de búsqueda
-   */
   private async listQuestionnaireSubmissions(
     params: QuestionnaireSubmissionSearchParams
   ): Promise<{ items: QuestionnaireSubmission[]; count: number }> {
     try {
-      // Construir consulta
       let query = "SELECT * FROM c WHERE 1=1";
       const queryParams: any[] = [];
 
@@ -96,7 +81,6 @@ export class QuestionnaireSubmissionHandler {
         queryParams.push({ name: "@status", value: params.status });
       }
 
-      // Obtener resultados
       const items =
         await this.cosmosService.queryItems<QuestionnaireSubmission>(
           this.CONTAINER_NAME,
@@ -104,7 +88,6 @@ export class QuestionnaireSubmissionHandler {
           queryParams
         );
 
-      // Aplicar paginación
       const limit = params.limit || items.length;
       const skip = params.skip || 0;
       const paginatedItems = items.slice(skip, skip + limit);
@@ -118,14 +101,11 @@ export class QuestionnaireSubmissionHandler {
     }
   }
 
-  /**
-   * Crea un nuevo cuestionario
-   */
+  // Creates a new questionnaire submission with validation
   private async createQuestionnaireSubmission(
     data: QuestionnaireSubmissionCreateRequest
   ): Promise<QuestionnaireSubmission> {
     try {
-      // Validar datos
       const validator = new QuestionnaireSubmissionValidator();
       const validationResult = await validator.validateCreate(
         data,
@@ -133,14 +113,12 @@ export class QuestionnaireSubmissionHandler {
       );
 
       if (!validationResult.isValid) {
-        throw createAppError(400, "Datos inválidos", validationResult.errors);
+        throw createAppError(400, "Invalid data", validationResult.errors);
       }
 
-      // Generar ID
       const id = uuidv4();
       const now = new Date().toISOString();
 
-      // Crear entidad
       const questionnaireSubmission: QuestionnaireSubmission = {
         id,
         userId: data.userId,
@@ -149,10 +127,9 @@ export class QuestionnaireSubmissionHandler {
         status: data.status || "draft",
         createdAt: now,
         updatedAt: now,
-        _partitionKey: id, // Usar el ID como clave de partición
+        _partitionKey: id, // Partition key must match the id for Cosmos DB
       };
 
-      // Guardar en Cosmos DB
       const result =
         await this.cosmosService.createItem<QuestionnaireSubmission>(
           this.CONTAINER_NAME,
@@ -165,15 +142,11 @@ export class QuestionnaireSubmissionHandler {
     }
   }
 
-  /**
-   * Actualiza un cuestionario existente
-   */
   private async updateQuestionnaireSubmission(
     id: string,
     data: QuestionnaireSubmissionUpdateRequest
   ): Promise<QuestionnaireSubmission> {
     try {
-      // Obtener cuestionario existente
       const existingQuestionnaire =
         await this.cosmosService.getItem<QuestionnaireSubmission>(
           this.CONTAINER_NAME,
@@ -182,10 +155,9 @@ export class QuestionnaireSubmissionHandler {
         );
 
       if (!existingQuestionnaire) {
-        throw createAppError(404, "Cuestionario no encontrado");
+        throw createAppError(404, "Questionnaire not found");
       }
 
-      // Preparar actualización
       const updatedQuestionnaireSubmission: QuestionnaireSubmission = {
         ...existingQuestionnaire,
         questionnaireAnswers:
@@ -199,7 +171,6 @@ export class QuestionnaireSubmissionHandler {
         updatedAt: new Date().toISOString(),
       };
 
-      // Actualizar en Cosmos DB
       const result =
         await this.cosmosService.updateItem<QuestionnaireSubmission>(
           this.CONTAINER_NAME,
@@ -214,12 +185,8 @@ export class QuestionnaireSubmissionHandler {
     }
   }
 
-  /**
-   * Elimina un cuestionario
-   */
   private async deleteQuestionnaireSubmission(id: string): Promise<void> {
     try {
-      // Verificar que existe
       const entity = await this.cosmosService.getItem<QuestionnaireSubmission>(
         this.CONTAINER_NAME,
         id,
@@ -227,56 +194,12 @@ export class QuestionnaireSubmissionHandler {
       );
 
       if (!entity) {
-        throw createAppError(404, "Cuestionario no encontrado");
+        throw createAppError(404, "Questionnaire not found");
       }
 
-      // Eliminar
       await this.cosmosService.deleteItem(this.CONTAINER_NAME, id, id);
     } catch (error) {
       throw error;
     }
-  }
-
-  /**
-   * Envía una respuesta a un cuestionario
-   */
-  private async submitQuestionnaireSubmission(
-    request: QuestionnaireSubmissionSubmitRequest
-  ): Promise<QuestionnaireSubmissionResponse> {
-    const { questionnaireSubmissionId, userId, answers } = request;
-
-    const questionnaire =
-      await this.cosmosService.getItem<QuestionnaireSubmission>(
-        this.CONTAINER_NAME,
-        questionnaireSubmissionId,
-        questionnaireSubmissionId
-      );
-
-    if (!questionnaire) {
-      throw new Error(
-        `Questionnaire with ID ${questionnaireSubmissionId} not found`
-      );
-    }
-
-    const responseId = uuidv4();
-    const now = new Date().toISOString();
-
-    const response: QuestionnaireSubmissionResponse = {
-      id: responseId,
-      questionnaireSubmissionId,
-      userId,
-      answers,
-      completedAt: Date.now(),
-      createdAt: Date.now(),
-      _partitionKey: responseId, // Usar el ID como clave de partición
-    };
-
-    // Guardar respuesta en Cosmos DB
-    await this.cosmosService.createItem<QuestionnaireSubmissionResponse>(
-      STORAGE_CONTAINERS.QUESTIONNAIRE_RESPONSES,
-      response
-    );
-
-    return response;
   }
 }

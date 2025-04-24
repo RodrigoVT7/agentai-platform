@@ -10,7 +10,6 @@ import { JwtService } from "../../shared/utils/jwt.service";
 import {
   QuestionnaireSubmissionCreateRequest,
   QuestionnaireSubmissionUpdateRequest,
-  QuestionnaireSubmissionSubmitRequest,
 } from "../../shared/models/questionnaireSubmission.model";
 import { QuestionnaireSubmissionHandler } from "../../shared/handlers/knowledge/questionnaireSubmissionHandler";
 
@@ -57,13 +56,11 @@ export async function QuestionnaireSubmission(
     let questionnaireData:
       | QuestionnaireSubmissionCreateRequest
       | QuestionnaireSubmissionUpdateRequest
-      | QuestionnaireSubmissionSubmitRequest
       | Record<string, never> = {};
-    if (method === "POST" || method === "PUT" || method === "SUBMIT") {
+    if (method === "POST" || method === "PUT") {
       questionnaireData = (await request.json()) as
         | QuestionnaireSubmissionCreateRequest
-        | QuestionnaireSubmissionUpdateRequest
-        | QuestionnaireSubmissionSubmitRequest;
+        | QuestionnaireSubmissionUpdateRequest;
     }
 
     const result = await handler.execute(questionnaireData, method, id);

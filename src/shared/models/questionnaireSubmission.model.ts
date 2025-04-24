@@ -27,16 +27,6 @@ export enum QuestionType {
   DATE = "date",
 }
 
-export interface QuestionnaireSubmissionResponse {
-  id: string;
-  questionnaireSubmissionId: string;
-  userId: string;
-  answers: Answer[];
-  completedAt: number;
-  createdAt: number;
-  _partitionKey?: string;
-}
-
 export interface Answer {
   questionId: string;
   value: string | string[] | number | boolean;
@@ -56,16 +46,6 @@ export interface QuestionnaireSubmissionCreateRequest {
   agentId: string;
   questionnaireAnswers: Record<string, any>;
   status?: "draft" | "ready";
-}
-
-export interface QuestionCreateRequest {
-  id?: string;
-  text: string;
-  type: QuestionType;
-  required: boolean;
-  options?: string[];
-  correctAnswer?: string | string[];
-  order: number;
 }
 
 export interface QuestionnaireSubmissionUpdateRequest {
