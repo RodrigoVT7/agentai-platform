@@ -12,6 +12,7 @@
     "deploy": "npm run build && func azure functionapp publish YOUR_FUNCTION_APP_NAME"
   },
   "dependencies": {
+    "@azure/cosmos": "^4.3.0",
     "@azure/data-tables": "^13.3.0",
     "@azure/functions": "^4.7.0",
     "@azure/keyvault-secrets": "^4.9.0",

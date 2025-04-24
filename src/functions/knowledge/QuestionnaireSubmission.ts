@@ -8,26 +8,25 @@ import { createLogger } from "../../shared/utils/logger";
 import { toAppError } from "../../shared/utils/error.utils";
 import { JwtService } from "../../shared/utils/jwt.service";
 import { QuestionnaireSubmissionCreateRequest } from "../../shared/models/questionnaireSubmission.model";
-import { QuestionnaireSubmissionValidator } from "../../shared/validators/knowledge/questionnaireSubmissionValidator";
 import { QuestionnaireSubmissionHandler } from "../../shared/handlers/knowledge/questionnaireSubmissionHandler";
 
+/**
+ * Main function to handle CRUD operations for questionnaire submissions
+ * Supports JWT authentication and data validation
+ */
 export async function QuestionnaireSubmission(
   request: HttpRequest,
   context: InvocationContext
 ): Promise<HttpResponseInit> {
   const logger = createLogger(context);
-  logger.info(
-    `Iniciando procesamiento de solicitud ${request.method} para questionnaire submission`
-  );
 
   try {
-    // Auth Verification
+    // JWT token authentication verification
     const authHeader = request.headers.get("authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      logger.warn("Intento de acceso sin token de autenticación");
       return {
         status: 401,
-        jsonBody: { error: "Se requiere autenticación" },
+        jsonBody: { error: "Authentication required" },
       };
     }
 
@@ -38,58 +37,30 @@ export async function QuestionnaireSubmission(
       const jwtService = new JwtService();
       const decodedToken = jwtService.verifyToken(token);
       userId = decodedToken.userId;
-      logger.info(`Usuario autenticado: ${userId}`);
     } catch (error) {
-      logger.warn("Token inválido o expirado", { error });
       return {
         status: 401,
-        jsonBody: { error: "Token inválido o expirado" },
+        jsonBody: { error: "Invalid or expired token" },
       };
     }
 
-    // Obtener los datos del cuerpo
+    // Questionnaire data processing
     const questionnaireData =
       (await request.json()) as QuestionnaireSubmissionCreateRequest;
-    logger.info("Datos del cuestionario recibidos", {
-      agentId: questionnaireData.agentId,
-      method: request.method,
-      id: request.params.id,
-    });
 
-    // Validar entrada
-    const validator = new QuestionnaireSubmissionValidator();
-    const validationResult = await validator.validateCreate(
-      questionnaireData,
-      userId
-    );
-
-    if (!validationResult.isValid) {
-      logger.warn("Validación fallida", { errors: validationResult.errors });
-      return {
-        status: 400,
-        jsonBody: {
-          error: "Datos inválidos",
-          details: validationResult.errors,
-        },
-      };
-    }
-
-    // Procesar solicitud
+    // Execute requested CRUD operation
     const handler = new QuestionnaireSubmissionHandler();
     const method = request.method;
     const id = request.params.id;
-    logger.info("Iniciando procesamiento de solicitud", { method, id });
 
     const result = await handler.execute(questionnaireData, method, id);
-    logger.info("Solicitud procesada exitosamente");
 
     return {
       status: 200,
       jsonBody: result,
     };
   } catch (error) {
-    logger.error("Error en gestión de cuestionarios:", error);
-
+    // Centralized error handling
     const appError = toAppError(error);
     return {
       status: appError.statusCode,
@@ -98,6 +69,7 @@ export async function QuestionnaireSubmission(
   }
 }
 
+// HTTP endpoint configuration
 app.http("QuestionnaireSubmission", {
   methods: ["GET", "POST", "PUT", "DELETE"],
   authLevel: "anonymous",

@@ -1,25 +1,32 @@
 import { Logger, createLogger } from "../../utils/logger";
 import { createAppError } from "../../utils/error.utils";
+import { CosmosService } from "../../services/cosmos.service";
 import { StorageService } from "../../services/storage.service";
 import { ValidationResult } from "../../models/validation.model";
-import { STORAGE_TABLES } from "../../constants";
 import {
   QuestionnaireSubmissionCreateRequest,
   QuestionnaireSubmissionUpdateRequest,
   QuestionnaireSubmissionSubmitRequest,
+  QuestionnaireSubmission,
 } from "../../models/questionnaireSubmission.model";
+import { STORAGE_TABLES, STORAGE_CONTAINERS } from "../../constants";
+
+const VALID_DRAFT_STATUSES = ["draft", "ready"] as const;
+const VALID_UPDATE_STATUSES = [...VALID_DRAFT_STATUSES, "completed"] as const;
 
 export class QuestionnaireSubmissionValidator {
+  private cosmosService: CosmosService;
   private storageService: StorageService;
   private logger: Logger;
 
   constructor(logger?: Logger) {
+    this.cosmosService = new CosmosService();
     this.storageService = new StorageService();
     this.logger = logger || createLogger();
   }
 
   /**
-   * Valida la creación de un cuestionario
+   * Validates questionnaire creation
    */
   async validateCreate(
     data: QuestionnaireSubmissionCreateRequest,
@@ -27,24 +34,29 @@ export class QuestionnaireSubmissionValidator {
   ): Promise<ValidationResult> {
     const errors: string[] = [];
 
-    // Validar campos requeridos
-    if (!data.agentId) {
-      errors.push("El ID del agente es requerido");
+    this.validateRequiredFields(data, errors);
+
+    if (data.status && !VALID_DRAFT_STATUSES.includes(data.status)) {
+      errors.push("Invalid status");
     }
 
-    if (!data.userId) {
-      errors.push("El ID del usuario es requerido");
-    }
-
-    if (!data.questionnaireAnswers) {
-      errors.push("Las respuestas del cuestionario son requeridas");
-    }
-
-    // Verificar acceso al agente
     if (data.agentId) {
-      const hasAccess = await this.verifyAgentAccess(data.agentId, userId);
-      if (!hasAccess) {
-        errors.push("No tiene acceso al agente especificado");
+      try {
+        const tableClient = this.storageService.getTableClient(
+          STORAGE_TABLES.AGENTS
+        );
+        const agent = await tableClient.getEntity("agent", data.agentId);
+
+        if (!agent) {
+          errors.push("Specified agent does not exist");
+        } else if (agent.userId !== userId) {
+          errors.push(
+            "Only the agent owner can create a questionnaire response"
+          );
+        }
+      } catch (error) {
+        this.logger.error(`Error checking agent ${data.agentId}:`, error);
+        errors.push("Specified agent does not exist");
       }
     }
 
@@ -55,7 +67,7 @@ export class QuestionnaireSubmissionValidator {
   }
 
   /**
-   * Valida la actualización de un cuestionario
+   * Validates questionnaire update
    */
   async validateUpdate(
     id: string,
@@ -64,22 +76,25 @@ export class QuestionnaireSubmissionValidator {
   ): Promise<ValidationResult> {
     const errors: string[] = [];
 
-    // Validar campos requeridos
     if (data.questionnaireAnswers === undefined && data.status === undefined) {
-      errors.push("Se requiere al menos un campo para actualizar");
+      errors.push("At least one field is required for update");
     }
 
-    if (data.status && !["draft", "ready", "completed"].includes(data.status)) {
-      errors.push("Estado inválido");
+    if (data.status && !VALID_UPDATE_STATUSES.includes(data.status)) {
+      errors.push("Invalid status");
     }
 
-    // Verificar acceso al cuestionario
-    const hasAccess = await this.verifyQuestionnaireSubmissionAccess(
-      id,
-      userId
-    );
-    if (!hasAccess) {
-      errors.push("No tiene acceso al cuestionario especificado");
+    const questionnaire = await this.getQuestionnaire(id);
+    if (!questionnaire) {
+      errors.push("Questionnaire not found");
+    } else {
+      const hasAccess = await this.verifyAgentAccess(
+        questionnaire.agentId,
+        userId
+      );
+      if (!hasAccess) {
+        errors.push("No access to the specified agent");
+      }
     }
 
     return {
@@ -89,7 +104,7 @@ export class QuestionnaireSubmissionValidator {
   }
 
   /**
-   * Valida el envío de respuestas a un cuestionario
+   * Validates questionnaire submission
    */
   async validateSubmit(
     data: QuestionnaireSubmissionSubmitRequest,
@@ -97,23 +112,28 @@ export class QuestionnaireSubmissionValidator {
   ): Promise<ValidationResult> {
     const errors: string[] = [];
 
-    // Validar campos requeridos
     if (!data.questionnaireSubmissionId) {
-      errors.push("El ID del cuestionario es requerido");
+      errors.push("Questionnaire ID is required");
     }
 
     if (!data.answers || Object.keys(data.answers).length === 0) {
-      errors.push("Se requieren respuestas para enviar");
+      errors.push("Answers are required to submit");
     }
 
-    // Verificar acceso al cuestionario
     if (data.questionnaireSubmissionId) {
-      const hasAccess = await this.verifyQuestionnaireSubmissionAccess(
-        data.questionnaireSubmissionId,
-        userId
+      const questionnaire = await this.getQuestionnaire(
+        data.questionnaireSubmissionId
       );
-      if (!hasAccess) {
-        errors.push("No tiene acceso al cuestionario especificado");
+      if (!questionnaire) {
+        errors.push("Questionnaire not found");
+      } else {
+        const hasAccess = await this.verifyAgentAccess(
+          questionnaire.agentId,
+          userId
+        );
+        if (!hasAccess) {
+          errors.push("No access to the specified agent");
+        }
       }
     }
 
@@ -124,44 +144,76 @@ export class QuestionnaireSubmissionValidator {
   }
 
   /**
-   * Verifica el acceso de un usuario a un agente
+   * Validates required fields for questionnaire creation
+   */
+  private validateRequiredFields(
+    data: QuestionnaireSubmissionCreateRequest,
+    errors: string[]
+  ): void {
+    if (!data.agentId) {
+      errors.push("Agent ID is required");
+    }
+
+    if (!data.userId) {
+      errors.push("User ID is required");
+    }
+
+    if (!data.questionnaireAnswers) {
+      errors.push("Questionnaire answers are required");
+    }
+  }
+
+  /**
+   * Gets a questionnaire by ID
+   */
+  private async getQuestionnaire(
+    id: string
+  ): Promise<QuestionnaireSubmission | null> {
+    try {
+      return await this.cosmosService.getItem<QuestionnaireSubmission>(
+        STORAGE_CONTAINERS.QUESTIONNAIRE_SUBMISSIONS,
+        id,
+        id
+      );
+    } catch (error) {
+      this.logger.error(`Error getting questionnaire ${id}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Verifies user access to an agent
    */
   private async verifyAgentAccess(
     agentId: string,
     userId: string
   ): Promise<boolean> {
     try {
-      // TODO: Implementar verificación de acceso al agente
-      return true;
-    } catch (error) {
-      this.logger.error("Error al verificar acceso al agente:", error);
-      return false;
-    }
-  }
-
-  /**
-   * Verifica el acceso de un usuario a un cuestionario
-   */
-  private async verifyQuestionnaireSubmissionAccess(
-    questionnaireSubmissionId: string,
-    userId: string
-  ): Promise<boolean> {
-    try {
-      const tableClient = this.storageService.getTableClient(
-        STORAGE_TABLES.QUESTIONNAIRE_SUBMISSIONS
-      );
-      const entity = await tableClient.getEntity(
-        "questionnaire",
-        questionnaireSubmissionId
+      const agent = await this.cosmosService.getItem(
+        STORAGE_TABLES.AGENTS,
+        agentId,
+        agentId
       );
 
-      if (!entity) {
-        return false;
+      if (agent && agent.userId === userId) {
+        return true;
       }
 
-      return entity.userId === userId;
+      const roles = await this.cosmosService.queryItems(
+        STORAGE_TABLES.USER_ROLES,
+        "SELECT * FROM c WHERE c.agentId = @agentId AND c.userId = @userId AND c.isActive = true",
+        [
+          { name: "@agentId", value: agentId },
+          { name: "@userId", value: userId },
+        ]
+      );
+
+      return roles.length > 0;
     } catch (error) {
-      this.logger.error("Error al verificar acceso al cuestionario:", error);
+      this.logger.error(
+        `Error verifying access for user ${userId} to agent ${agentId}:`,
+        error
+      );
       return false;
     }
   }

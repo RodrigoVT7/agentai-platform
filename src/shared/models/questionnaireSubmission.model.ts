@@ -6,6 +6,7 @@ export interface QuestionnaireSubmission {
   questionnaireAnswers: Record<string, any>;
   createdAt: string;
   updatedAt: string;
+  _partitionKey?: string;
 }
 
 export interface Question {
@@ -33,6 +34,7 @@ export interface QuestionnaireSubmissionResponse {
   answers: Answer[];
   completedAt: number;
   createdAt: number;
+  _partitionKey?: string;
 }
 
 export interface Answer {
