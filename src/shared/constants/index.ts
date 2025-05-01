@@ -15,11 +15,7 @@
   INTEGRATION_CATALOG: "integrationcatalog",
   INTEGRATIONS: "integrations",
   INTEGRATION_LOGS: "integrationlogs",
-};
-
-export const STORAGE_CONTAINERS = {
-  QUESTIONNAIRE_SUBMISSIONS: "questionnaire-submissions",
-  QUESTIONNAIRE_RESPONSES: "questionnaireresponses",
+  QUESTIONNAIRE_SUBMISSIONS: "questionnairesubmissions",
 };
 
 export const STORAGE_QUEUES = {

@@ -1,6 +1,5 @@
 import { Logger, createLogger } from "../../utils/logger";
 import { createAppError } from "../../utils/error.utils";
-import { CosmosService } from "../../services/cosmos.service";
 import { StorageService } from "../../services/storage.service";
 import { ValidationResult } from "../../models/validation.model";
 import {
@@ -8,21 +7,39 @@ import {
   QuestionnaireSubmissionUpdateRequest,
   QuestionnaireSubmissionSubmitRequest,
   QuestionnaireSubmission,
+  QuestionnaireSubmissionEntity,
 } from "../../models/questionnaireSubmission.model";
-import { STORAGE_TABLES, STORAGE_CONTAINERS } from "../../constants";
+import { STORAGE_TABLES } from "../../constants";
+import { TableClient } from "@azure/data-tables";
 
 const VALID_DRAFT_STATUSES = ["draft", "ready"] as const;
 const VALID_UPDATE_STATUSES = [...VALID_DRAFT_STATUSES, "completed"] as const;
 
 export class QuestionnaireSubmissionValidator {
-  private cosmosService: CosmosService;
   private storageService: StorageService;
   private logger: Logger;
+  private readonly TABLE_NAME = "questionnairesubmissions"; // Nombre explícito para evitar problemas
 
   constructor(logger?: Logger) {
-    this.cosmosService = new CosmosService();
     this.storageService = new StorageService();
     this.logger = logger || createLogger();
+  }
+
+  // Método específico para obtener TableClient
+  private getTableClient(tableName: string): TableClient {
+    const connectionString = process.env.STORAGE_CONNECTION_STRING || "";
+    return TableClient.fromConnectionString(connectionString, tableName, {
+      allowInsecureConnection: true,
+    });
+  }
+
+  // Función para sanitizar claves para Azure Table Storage
+  private sanitizeKey(key: string): string {
+    // Eliminar caracteres no permitidos en Azure Table Storage
+    return key
+      .replace(/[\/\\#?]/g, "_")
+      .replace(/\u0000-\u001F/g, "") // Eliminar caracteres de control
+      .replace(/\s+/g, "_"); // Reemplazar espacios con guiones bajos
   }
 
   /**
@@ -42,9 +59,7 @@ export class QuestionnaireSubmissionValidator {
 
     if (data.agentId) {
       try {
-        const tableClient = this.storageService.getTableClient(
-          STORAGE_TABLES.AGENTS
-        );
+        const tableClient = this.getTableClient(STORAGE_TABLES.AGENTS);
         const agent = await tableClient.getEntity("agent", data.agentId);
 
         if (!agent) {
@@ -54,9 +69,13 @@ export class QuestionnaireSubmissionValidator {
             "Only the agent owner can create a questionnaire response"
           );
         }
-      } catch (error) {
-        this.logger.error(`Error checking agent ${data.agentId}:`, error);
-        errors.push("Specified agent does not exist");
+      } catch (error: any) {
+        if (error.statusCode === 404) {
+          errors.push("Specified agent does not exist");
+        } else {
+          this.logger.error(`Error checking agent ${data.agentId}:`, error);
+          errors.push("Error validating agent access");
+        }
       }
     }
 
@@ -70,9 +89,9 @@ export class QuestionnaireSubmissionValidator {
    * Validates questionnaire update
    */
   async validateUpdate(
-    id: string,
-    data: QuestionnaireSubmissionUpdateRequest,
-    userId: string
+    userId: string,
+    agentId: string,
+    data: QuestionnaireSubmissionUpdateRequest
   ): Promise<ValidationResult> {
     const errors: string[] = [];
 
@@ -84,7 +103,7 @@ export class QuestionnaireSubmissionValidator {
       errors.push("Invalid status");
     }
 
-    const questionnaire = await this.getQuestionnaire(id);
+    const questionnaire = await this.getQuestionnaire(userId, agentId);
     if (!questionnaire) {
       errors.push("Questionnaire not found");
     } else {
@@ -121,9 +140,18 @@ export class QuestionnaireSubmissionValidator {
     }
 
     if (data.questionnaireSubmissionId) {
-      const questionnaire = await this.getQuestionnaire(
-        data.questionnaireSubmissionId
-      );
+      // El ID debe estar en formato userId__agentId
+      const [qUserId, qAgentId] = data.questionnaireSubmissionId.split("__");
+
+      if (!qUserId || !qAgentId) {
+        errors.push("Invalid questionnaire ID format");
+        return {
+          isValid: false,
+          errors,
+        };
+      }
+
+      const questionnaire = await this.getQuestionnaire(qUserId, qAgentId);
       if (!questionnaire) {
         errors.push("Questionnaire not found");
       } else {
@@ -167,16 +195,44 @@ export class QuestionnaireSubmissionValidator {
    * Gets a questionnaire by ID
    */
   private async getQuestionnaire(
-    id: string
+    userId: string,
+    agentId: string
   ): Promise<QuestionnaireSubmission | null> {
     try {
-      return await this.cosmosService.getItem<QuestionnaireSubmission>(
-        STORAGE_CONTAINERS.QUESTIONNAIRE_SUBMISSIONS,
-        id,
-        id
+      const tableClient = this.getTableClient(this.TABLE_NAME);
+
+      // Sanitizar claves
+      const partitionKey = this.sanitizeKey(userId);
+      const rowKey = this.sanitizeKey(agentId);
+
+      const entity = await tableClient.getEntity<QuestionnaireSubmissionEntity>(
+        partitionKey,
+        rowKey
       );
-    } catch (error) {
-      this.logger.error(`Error getting questionnaire ${id}:`, error);
+
+      if (!entity) return null;
+
+      // Convertir a modelo QuestionnaireSubmission
+      return {
+        id: entity.id,
+        userId: entity.userId,
+        agentId: entity.agentId,
+        status: entity.status as "draft" | "ready",
+        questionnaireAnswersJson: entity.questionnaireAnswersJson,
+        agentName: entity.agentName,
+        createdAt: entity.createdAt,
+        updatedAt: entity.updatedAt,
+        partitionKey: entity.partitionKey,
+        rowKey: entity.rowKey,
+      };
+    } catch (error: any) {
+      if (error.statusCode === 404) {
+        return null;
+      }
+      this.logger.error(
+        `Error getting questionnaire for user ${userId} and agent ${agentId}:`,
+        error
+      );
       return null;
     }
   }
@@ -189,24 +245,32 @@ export class QuestionnaireSubmissionValidator {
     userId: string
   ): Promise<boolean> {
     try {
-      const agent = await this.cosmosService.getItem(
-        STORAGE_TABLES.AGENTS,
-        agentId,
-        agentId
-      );
+      const tableClient = this.getTableClient(STORAGE_TABLES.AGENTS);
 
-      if (agent && agent.userId === userId) {
-        return true;
+      try {
+        const agent = await tableClient.getEntity("agent", agentId);
+        if (agent.userId === userId) {
+          return true;
+        }
+      } catch (error: any) {
+        if (error.statusCode !== 404) {
+          this.logger.error(`Error checking agent ${agentId}:`, error);
+        }
+        return false;
       }
 
-      const roles = await this.cosmosService.queryItems(
-        STORAGE_TABLES.USER_ROLES,
-        "SELECT * FROM c WHERE c.agentId = @agentId AND c.userId = @userId AND c.isActive = true",
-        [
-          { name: "@agentId", value: agentId },
-          { name: "@userId", value: userId },
-        ]
-      );
+      // Verificar roles de usuario
+      const rolesTableClient = this.getTableClient(STORAGE_TABLES.USER_ROLES);
+      const odataFilter = `agentId eq '${agentId}' and userId eq '${userId}' and isActive eq true`;
+
+      const roles = [];
+      const rolesIterator = rolesTableClient.listEntities({
+        queryOptions: { filter: odataFilter },
+      });
+
+      for await (const role of rolesIterator) {
+        roles.push(role);
+      }
 
       return roles.length > 0;
     } catch (error) {

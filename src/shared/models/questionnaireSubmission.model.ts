@@ -3,10 +3,25 @@ export interface QuestionnaireSubmission {
   userId: string;
   status: "draft" | "ready";
   agentId: string;
-  questionnaireAnswers: Record<string, any>;
+  questionnaireAnswersJson: string;
+  agentName?: string;
   createdAt: string;
   updatedAt: string;
-  _partitionKey?: string;
+  partitionKey: string;
+  rowKey: string;
+}
+
+export interface QuestionnaireSubmissionEntity {
+  partitionKey: string;
+  rowKey: string;
+  id: string;
+  userId: string;
+  agentId: string;
+  status: string;
+  questionnaireAnswersJson: string;
+  agentName?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Question {
