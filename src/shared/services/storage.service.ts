@@ -4,22 +4,28 @@ import { QueueServiceClient } from "@azure/storage-queue";
 
 export class StorageService {
   private connectionString: string;
-  
+
   constructor() {
     this.connectionString = process.env.STORAGE_CONNECTION_STRING || "";
   }
-  
+
   getTableClient(tableName: string): TableClient {
-    return TableClient.fromConnectionString(this.connectionString, tableName);
+    return TableClient.fromConnectionString(this.connectionString, tableName, {
+      allowInsecureConnection: true,
+    });
   }
-  
+
   getBlobContainerClient(containerName: string): ContainerClient {
-    const blobServiceClient = BlobServiceClient.fromConnectionString(this.connectionString);
+    const blobServiceClient = BlobServiceClient.fromConnectionString(
+      this.connectionString
+    );
     return blobServiceClient.getContainerClient(containerName);
   }
-  
+
   getQueueClient(queueName: string): any {
-    const queueServiceClient = QueueServiceClient.fromConnectionString(this.connectionString);
+    const queueServiceClient = QueueServiceClient.fromConnectionString(
+      this.connectionString
+    );
     return queueServiceClient.getQueueClient(queueName);
   }
 }
