@@ -97,6 +97,7 @@ export interface Conversation {
     contentType?: string; 
     attachments?: Record<string, any>;
     metadata?: Record<string, any>;
+    sourceChannel?: string;
   }
   
   export interface MessageResponse {

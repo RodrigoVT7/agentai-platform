@@ -5,7 +5,6 @@
   OTP_CODES: "otpcodes",
   KNOWLEDGE_BASES: "knowledgebases",
   DOCUMENTS: "documents",
-  VECTORS: "vectors",
   CONVERSATIONS: "conversations",
   MESSAGES: "messages",
   USER_ROLES: "userroles",
@@ -25,7 +24,8 @@ export const STORAGE_QUEUES = {
   CONVERSATION: "conversation-queue",
   COMPLETION: "completion-queue",
   HANDOFF: "handoff-queue",
-  INTEGRATION: "integration-queue"
+  INTEGRATION: "integration-queue",
+  SEND_MESSAGE: "send-message-queue"
 };
 
 export const AUTH_CONFIG = {
@@ -54,4 +54,11 @@ export const AI_CONFIG = {
   CHAT_MODEL: "gpt-4o",
   TEMPERATURE: 0.7,
   MAX_TOKENS: 4000
+};
+
+export const AZURE_SEARCH_CONFIG = {
+  ENDPOINT: process.env.AZURE_SEARCH_ENDPOINT || "",
+  ADMIN_KEY: process.env.AZURE_SEARCH_ADMIN_KEY || "",
+  QUERY_KEY: process.env.AZURE_SEARCH_QUERY_KEY || "",
+  INDEX_NAME: process.env.AZURE_SEARCH_INDEX_NAME || ""
 };

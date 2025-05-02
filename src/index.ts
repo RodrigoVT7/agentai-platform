@@ -30,6 +30,7 @@ import './functions/knowledge/DocumentManager';
 import './functions/conversation/MessageReceiver';
 import './functions/conversation/ContextRetriever';
 import './functions/conversation/ChatCompletion';
+import './functions/conversation/MessageSender';
 import './functions/conversation/ConversationHistory';
 import './functions/conversation/FeedbackProcessor';
 import './functions/conversation/ConversationSearch';

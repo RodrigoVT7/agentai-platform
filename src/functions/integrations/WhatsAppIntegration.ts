@@ -80,8 +80,8 @@ export async function WhatsAppIntegration(request: HttpRequest, context: Invocat
       case 'POST':
         if (request.url.includes('/send')) {
           // Enviar mensaje a través de WhatsApp
-          const messageData = await request.json();
-          
+          const messageDataUnknown = await request.json();
+          const messageData = messageDataUnknown as any;
           // Validar datos del mensaje
           const sendValidation = await validator.validateMessage(messageData, userId);
           if (!sendValidation.isValid) {
@@ -257,6 +257,6 @@ app.http('WhatsAppIntegration', {
 app.http('WhatsAppWebhook', {
   methods: ['GET', 'POST'],
   authLevel: 'anonymous', 
-  route: 'integrations/whatsapp/webhook',
+  route: '12',
   handler: WhatsAppIntegration
 });

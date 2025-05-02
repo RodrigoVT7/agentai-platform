@@ -353,14 +353,24 @@ async function handleGoogleAuthCallback(request: HttpRequest, logger: any): Prom
     };
   }
 }
-app.http('GoogleCalendar', {
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+
+// 1. Ruta para acciones generales de Google (sin ID específico)
+app.http('GoogleCalendarGeneralActions', {
+  methods: ['GET'], // O los métodos que necesites para acciones sin ID
   authLevel: 'anonymous',
-  route: 'integrations/google/{id?}/{action?}',
-  handler: GoogleCalendar
+  route: 'integrations/google/{action}', // {action} es ahora obligatorio aquí
+  handler: GoogleCalendar // Sigue usando el mismo handler
 });
 
-// Endpoint específico para callback de OAuth
+// 2. Ruta para acciones sobre una integración específica (CON ID)
+app.http('GoogleCalendarSpecificIntegration', {
+  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Métodos para operar sobre una integración
+  authLevel: 'anonymous',
+  route: 'integrations/google/{id}/{action?}', // {id} es ahora obligatorio, {action} opcional
+  handler: GoogleCalendar // Sigue usando el mismo handler
+});
+
+// 3. Ruta Específica para Callback de OAuth (sin cambios)
 app.http('GoogleCalendarCallback', {
   methods: ['GET'],
   authLevel: 'anonymous',

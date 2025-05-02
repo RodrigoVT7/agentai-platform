@@ -14,6 +14,7 @@ import {
 } from "../../models/conversation.model";
 import { SearchQuery } from "../../models/search.model";
 import {IntegrationStatus } from "../../models/integration.model";
+import { DocumentSearchHandler } from "../knowledge/documentSearchHandler"; 
 
 interface QueueMessage {
   messageId: string;
@@ -26,7 +27,8 @@ export class ContextRetrieverHandler {
   private storageService: StorageService;
   private openaiService: OpenAIService;
   private logger: Logger;
-  
+  private documentSearchHandler: DocumentSearchHandler
+
   // Configuración para el contexto de la conversación
   private maxContextMessages = 10; // Últimos N mensajes a incluir
   private maxRelevantChunks = 5; // Máximos fragmentos de conocimiento a incluir
@@ -35,6 +37,7 @@ export class ContextRetrieverHandler {
     this.storageService = new StorageService();
     this.openaiService = new OpenAIService(logger);
     this.logger = logger || createLogger();
+    this.documentSearchHandler = new DocumentSearchHandler(this.logger);
   }
   
   async execute(message: QueueMessage): Promise<void> {
@@ -215,54 +218,52 @@ export class ContextRetrieverHandler {
     content: string;
     documentId: string;
     chunkId: string;
-    similarity: number;
-  }>> {
+    similarity: number; // O score, dependiendo de lo que devuelvas
+}>> {
     try {
-      // 1. Primero necesitamos obtener el ID de la base de conocimiento del agente
-      const kbTableClient = this.storageService.getTableClient(STORAGE_TABLES.KNOWLEDGE_BASES);
-      
-      let knowledgeBaseId: string | null = null;
-      const kbs = await kbTableClient.listEntities({
-        queryOptions: { filter: `PartitionKey eq '${agentId}' and isActive eq true` }
-      });
-      
-      for await (const kb of kbs) {
-        knowledgeBaseId = kb.id as string;
-        break;
-      }
-      
-      if (!knowledgeBaseId) {
-        this.logger.warn(`No se encontró base de conocimiento activa para el agente ${agentId}`);
-        return [];
-      }
-      
-      // 2. Realizar búsqueda vectorial
-      const searchParams: SearchQuery = {
-        query,
-        knowledgeBaseId,
-        agentId,
-        limit: this.maxRelevantChunks,
-        threshold: 0.7, // Umbral de similitud mínima
-        includeContent: true
-      };
-      
-      // Usando el servicio DocumentSearchHandler directamente
-      const docSearchHandler = new (await import("../knowledge/documentSearchHandler")).DocumentSearchHandler(this.logger);
-      const searchResults = await docSearchHandler.execute(searchParams);
-      
-      // 3. Formatear resultados
-      return searchResults.results.map(result => ({
-        content: result.content || "",
-        documentId: result.documentId,
-        chunkId: result.chunkId,
-        similarity: result.similarity
-      }));
-      
+        // 1. Obtener ID de la base de conocimiento activa (como antes)
+        const kbTableClient = this.storageService.getTableClient(STORAGE_TABLES.KNOWLEDGE_BASES);
+        let knowledgeBaseId: string | null = null;
+        const kbs = await kbTableClient.listEntities({
+            queryOptions: { filter: `PartitionKey eq '${agentId}' and isActive eq true` }
+        });
+        for await (const kb of kbs) {
+            knowledgeBaseId = kb.id as string;
+            break;
+        }
+
+        if (!knowledgeBaseId) {
+            this.logger.warn(`No se encontró base de conocimiento activa para el agente ${agentId}`);
+            return [];
+        }
+
+        // 2. Realizar búsqueda usando el DocumentSearchHandler (que ahora usa AI Search)
+        const searchParams: SearchQuery = {
+            query,
+            knowledgeBaseId,
+            agentId, // Pasar agentId puede no ser estrictamente necesario si KB ID es único, pero bueno tenerlo
+            limit: this.maxRelevantChunks,
+            threshold: 0.7, // El threshold real se aplica ahora dentro del handler o post-búsqueda
+            includeContent: true
+        };
+
+        // Llamar al handler actualizado
+        const searchResults = await this.documentSearchHandler.execute(searchParams);
+
+        // 3. Formatear resultados (adaptar si la estructura cambió)
+        return searchResults.results.map(result => ({
+            content: result.content || "",
+            documentId: result.documentId,
+            chunkId: result.chunkId,
+             // Usa similarity o relevanceScore según lo que devuelva tu handler
+            similarity: result.similarity
+        }));
+
     } catch (error) {
-      this.logger.error(`Error al buscar contenido relevante para agente ${agentId}:`, error);
-      return [];
+        this.logger.error(`Error al buscar contenido relevante para agente ${agentId} usando AI Search:`, error);
+        return [];
     }
-  }
+}
   
   private formatConversationContext(messages: Message[]): Array<{ role: MessageRole; content: string }> {
     return messages.map(msg => ({
