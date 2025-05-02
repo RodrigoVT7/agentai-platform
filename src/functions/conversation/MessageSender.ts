@@ -2,26 +2,40 @@
 import { app, InvocationContext } from "@azure/functions";
 import { MessageSenderHandler } from "../../shared/handlers/conversation/messageSenderHandler";
 import { createLogger } from "../../shared/utils/logger";
-import { STORAGE_QUEUES } from "../../shared/constants";
+import { STORAGE_QUEUES } from "../../shared/constants/index";
 
-export async function MessageSender(queueItem: unknown, context: InvocationContext): Promise<void> {
+export async function MessageSender(
+  queueItem: unknown,
+  context: InvocationContext
+): Promise<void> {
   const logger = createLogger(context);
 
   try {
     // Validar que el mensaje de la cola es válido
     const messagePayload = queueItem as any; // TODO: Definir una interfaz fuerte para SendMessageQueuePayload
-    if (!messagePayload || !messagePayload.conversationId || !messagePayload.messageToSendId || !messagePayload.agentId || !messagePayload.recipientId) {
-      logger.error("Mensaje de cola inválido para MessageSender", { messagePayload });
+    if (
+      !messagePayload ||
+      !messagePayload.conversationId ||
+      !messagePayload.messageToSendId ||
+      !messagePayload.agentId ||
+      !messagePayload.recipientId
+    ) {
+      logger.error("Mensaje de cola inválido para MessageSender", {
+        messagePayload,
+      });
       return; // Descartar mensaje inválido
     }
 
-    logger.info(`MessageSender procesando mensaje para enviar: ${messagePayload.messageToSendId}`);
+    logger.info(
+      `MessageSender procesando mensaje para enviar: ${messagePayload.messageToSendId}`
+    );
 
     const handler = new MessageSenderHandler(logger);
     await handler.execute(messagePayload);
 
-    logger.info(`MessageSender completó el procesamiento para ${messagePayload.messageToSendId}`);
-
+    logger.info(
+      `MessageSender completó el procesamiento para ${messagePayload.messageToSendId}`
+    );
   } catch (error) {
     logger.error("Error fatal en la función MessageSender:", error);
     // Considera si necesitas relanzar el error para que Azure Functions lo reintente
@@ -30,8 +44,8 @@ export async function MessageSender(queueItem: unknown, context: InvocationConte
   }
 }
 
-app.storageQueue('MessageSender', {
+app.storageQueue("MessageSender", {
   queueName: STORAGE_QUEUES.SEND_MESSAGE, // Usar la nueva cola
-  connection: 'AzureWebJobsStorage', // Asegúrate que esta conexión esté configurada
-  handler: MessageSender
+  connection: "AzureWebJobsStorage", // Asegúrate que esta conexión esté configurada
+  handler: MessageSender,
 });
