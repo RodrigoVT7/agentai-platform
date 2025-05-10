@@ -18,19 +18,42 @@ import {
   MessageStatus,
 } from "../../models/conversation.model"; // Asegúrate que estén importados
 import { MessageReceiverHandler } from "../conversation/messageReceiverHandler"; // Importar el handler
-import {
-  MetaLongLivedTokenResponse,
-  MetaShortLivedTokenResponse,
-  WhatsAppPhoneNumbersResponse,
-} from "../../models/meta.model";
+import { TableClient } from "@azure/data-tables"; // Importar TableClient
+
+// Tipo genérico para Context y AzureFunction
+type Context = {
+  log: {
+    error: (message: string, error?: any) => void;
+    info: (message: string) => void;
+    warn: (message: string) => void;
+  };
+};
+
+type AzureFunction = (context: Context, myTimer: any) => Promise<void>;
+
+// Interfaz para WhatsAppIntegration
+interface WhatsAppIntegration extends Integration {
+  accessToken: string;
+  tokenExpiry?: string;
+  rowKey: string;
+}
 
 export class WhatsAppIntegrationHandler {
   private storageService: StorageService;
   private logger: Logger;
+  private tableClient: TableClient;
 
   constructor(logger?: Logger) {
     this.storageService = new StorageService();
     this.logger = logger || createLogger();
+    this.tableClient = this.storageService.getTableClient(
+      STORAGE_TABLES.INTEGRATIONS
+    );
+  }
+
+  // Getter para el storageService para permitir acceso al timer trigger
+  get tableService(): StorageService {
+    return this.storageService;
   }
 
   async getStatus(
@@ -379,6 +402,66 @@ export class WhatsAppIntegrationHandler {
         integration.config as string
       ) as IntegrationWhatsAppConfig;
 
+      // Verificar y renovar token si es necesario
+      let accessToken: string;
+      try {
+        const whatsAppIntegration: WhatsAppIntegration = {
+          ...integration,
+          accessToken: config.accessToken,
+          tokenExpiry: config.tokenExpiry,
+          rowKey: integrationId,
+        };
+
+        // Intentar renovar el token
+        accessToken = await this.validateAndRefreshTokenIfNeeded(
+          whatsAppIntegration
+        );
+
+        // Actualizar el token en config si cambió
+        if (accessToken !== config.accessToken) {
+          config.accessToken = accessToken;
+          // También actualizar el token en el objeto de integración para futuros usos
+          await this.tableClient.updateEntity(
+            {
+              partitionKey: integration.agentId,
+              rowKey: integrationId,
+              config: JSON.stringify(config),
+            },
+            "Merge"
+          );
+        }
+      } catch (error) {
+        // Verificar si el token actual todavía es válido antes de fallar
+        const currentToken = config.accessToken;
+        const tokenExpiry = config.tokenExpiry
+          ? new Date(config.tokenExpiry)
+          : null;
+        const now = new Date();
+
+        if (currentToken && tokenExpiry && tokenExpiry > now) {
+          // El token actual todavía es válido, usar este token a pesar del error de renovación
+          this.logger.warn(
+            `Error al renovar token, pero el token actual aún es válido hasta ${tokenExpiry.toISOString()}. Se usará el token existente.`
+          );
+          accessToken = currentToken;
+        } else {
+          // El token actual no es válido o no hay información de expiración
+          this.logger.error(
+            `Error al validar/renovar token para envío de mensaje: ${error}`
+          );
+          return {
+            status: 401,
+            jsonBody: {
+              error: "Error de autenticación con WhatsApp",
+              details:
+                error instanceof Error
+                  ? error.message
+                  : "Token expirado o inválido",
+            },
+          };
+        }
+      }
+
       // 3. Construir Payload para la API de WhatsApp
       const payload: any = {
         messaging_product: "whatsapp",
@@ -480,7 +563,7 @@ export class WhatsAppIntegrationHandler {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${config.accessToken}`,
+            Authorization: `Bearer ${accessToken}`, // Usar el token validado/renovado
           },
           body: JSON.stringify(payload),
         }
@@ -1367,4 +1450,183 @@ export class WhatsAppIntegrationHandler {
       };
     }
   }
+
+  /**
+   * Renueva un token específico para una integración
+   */
+  async refreshToken(integration: WhatsAppIntegration): Promise<string | null> {
+    try {
+      const appId = process.env.META_APP_ID;
+      const appSecret = process.env.META_APP_SECRET;
+
+      if (!appId || !appSecret) {
+        this.logger.error(
+          "Faltan variables de entorno para la renovación del token"
+        );
+        return null;
+      }
+
+      // Construir URL para renovar el token
+      const refreshUrl = new URL(
+        "https://graph.facebook.com/v22.0/oauth/access_token"
+      );
+      refreshUrl.searchParams.append("grant_type", "fb_exchange_token");
+      refreshUrl.searchParams.append("client_id", appId);
+      refreshUrl.searchParams.append("client_secret", appSecret);
+      refreshUrl.searchParams.append(
+        "fb_exchange_token",
+        integration.accessToken
+      );
+
+      // Solicitar nuevo token
+      const response = await fetch(refreshUrl.toString(), { method: "GET" });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        this.logger.error(
+          `Error al renovar token para agente ${integration.agentId}: ${errorText}`
+        );
+        return null;
+      }
+
+      const tokenData = await response.json();
+
+      if (!tokenData.access_token) {
+        this.logger.error(
+          `Respuesta de token inválida para agente ${integration.agentId}`
+        );
+        return null;
+      }
+
+      // Calcular nueva fecha de expiración
+      const expiresIn = tokenData.expires_in || 5184000; // Por defecto 60 días en segundos
+      const newExpiry = new Date(Date.now() + expiresIn * 1000);
+
+      // Actualizar en base de datos
+      await this.tableClient.updateEntity(
+        {
+          partitionKey: integration.agentId,
+          rowKey: integration.rowKey,
+          accessToken: tokenData.access_token,
+          tokenExpiry: newExpiry.toISOString(),
+          config: integration.config,
+        },
+        "Merge"
+      );
+
+      this.logger.info(
+        `Token renovado exitosamente para agente ${
+          integration.agentId
+        }, expira: ${newExpiry.toISOString()}`
+      );
+      return tokenData.access_token;
+    } catch (error) {
+      this.logger.error(
+        `Error inesperado al renovar token para agente ${integration.agentId}:`,
+        error
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Verifica si un token necesita ser renovado (menos de 7 días para expirar)
+   */
+  needsRefresh(integration: WhatsAppIntegration): boolean {
+    if (!integration.tokenExpiry) return true;
+
+    const expiryDate = new Date(integration.tokenExpiry);
+    const sevenDaysFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 días en milisegundos
+
+    return expiryDate <= sevenDaysFromNow;
+  }
+
+  /**
+   * Método para validar y renovar tokens al momento de usarlos
+   */
+  async validateAndRefreshTokenIfNeeded(
+    integration: WhatsAppIntegration
+  ): Promise<string> {
+    try {
+      // Si no hay token o fecha de expiración, lanzar error
+      if (!integration.accessToken || !integration.tokenExpiry) {
+        throw new Error("Token de acceso inválido o sin fecha de expiración");
+      }
+
+      const expiryDate = new Date(integration.tokenExpiry);
+      const now = new Date();
+
+      // Si ya expiró, error inmediato
+      if (expiryDate <= now) {
+        throw new Error("El token de acceso ha expirado");
+      }
+
+      // Si expira en menos de 7 días, renovar proactivamente
+      const sevenDaysFromNow = new Date(
+        now.getTime() + 7 * 24 * 60 * 60 * 1000
+      );
+      if (expiryDate <= sevenDaysFromNow) {
+        this.logger.info(
+          `Renovando proactivamente token para integración ${integration.rowKey}`
+        );
+
+        const newToken = await this.refreshToken(integration);
+
+        if (newToken) {
+          return newToken;
+        }
+      }
+
+      // Devolver token actual si todo está correcto
+      return integration.accessToken;
+    } catch (error) {
+      this.logger.error("Error validando token:", error);
+      throw error;
+    }
+  }
 }
+
+/**
+ * Función Azure Timer Trigger para renovar tokens programados para expirar pronto
+ */
+export const tokenRefreshTimerTrigger: AzureFunction = async function (
+  context: Context,
+  myTimer: any
+): Promise<void> {
+  const logger = createLogger();
+  const whatsAppHandler = new WhatsAppIntegrationHandler(logger);
+  let entitiesProcessed = 0;
+  let tokensRenewed = 0;
+
+  try {
+    // Obtener todas las integraciones de WhatsApp
+    const tableClient = whatsAppHandler.tableService.getTableClient(
+      STORAGE_TABLES.INTEGRATIONS
+    );
+    const integrations = tableClient.listEntities<WhatsAppIntegration>({
+      queryOptions: {
+        filter: `provider eq 'whatsapp' and isActive eq true`,
+      },
+    });
+
+    for await (const integration of integrations) {
+      entitiesProcessed++;
+
+      // Verificar si necesita renovación
+      if (whatsAppHandler.needsRefresh(integration)) {
+        logger.info(`Renovando token para agente: ${integration.agentId}`);
+        const newToken = await whatsAppHandler.refreshToken(integration);
+
+        if (newToken) {
+          tokensRenewed++;
+        }
+      }
+    }
+
+    logger.info(
+      `Proceso completado. Entidades procesadas: ${entitiesProcessed}, Tokens renovados: ${tokensRenewed}`
+    );
+  } catch (error) {
+    logger.error("Error en el proceso de renovación de tokens:", error);
+  }
+};
