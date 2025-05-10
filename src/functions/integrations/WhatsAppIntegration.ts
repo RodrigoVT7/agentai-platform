@@ -10,9 +10,6 @@ import { WhatsAppIntegrationValidator } from "../../shared/validators/integratio
 import { createLogger, Logger } from "../../shared/utils/logger";
 import { toAppError } from "../../shared/utils/error.utils";
 import { JwtService } from "../../shared/utils/jwt.service";
-import { StorageService } from "../../shared/services/storage.service";
-import { IntegrationWhatsAppConfig } from "../../shared/models/integration.model";
-import { STORAGE_TABLES } from "../../shared/constants";
 
 export async function WhatsAppIntegration(
   request: HttpRequest,
@@ -190,7 +187,7 @@ export async function WhatsAppIntegration(
 
 /**
  * Maneja la verificación del webhook GET de WhatsApp.
- * Ahora busca el token en las configuraciones de integración almacenadas.
+ * Utiliza directamente la variable de entorno META_WHATSAPP_VERIFY_TOKEN para la verificación.
  */
 async function handleWhatsAppWebhookVerification(
   request: HttpRequest,
@@ -206,66 +203,43 @@ async function handleWhatsAppWebhookVerification(
       `Verificación de webhook de WhatsApp recibida: mode=${mode}, token=${receivedToken}`
     );
 
-    if (mode === "subscribe" && receivedToken && challenge) {
-      const storageService = new StorageService();
-      const tableClient = storageService.getTableClient(
-        STORAGE_TABLES.INTEGRATIONS
+    // Obtener el token de verificación desde las variables de entorno
+    const verifyToken = process.env.META_WHATSAPP_VERIFY_TOKEN;
+
+    if (!verifyToken) {
+      logger.error(
+        "Variable de entorno META_WHATSAPP_VERIFY_TOKEN no configurada"
       );
-
-      // Buscar integraciones de WhatsApp activas
-      const integrations = tableClient.listEntities({
-        queryOptions: { filter: `provider eq 'whatsapp' and isActive eq true` },
-      });
-
-      let tokenFound = false;
-      for await (const integration of integrations) {
-        try {
-          if (integration.config && typeof integration.config === "string") {
-            const config = JSON.parse(
-              integration.config
-            ) as IntegrationWhatsAppConfig;
-            // Comparar el token recibido con el almacenado en la configuración
-            if (config.webhookVerifyToken === receivedToken) {
-              tokenFound = true;
-              logger.info(
-                `Token de verificación encontrado en la integración: ${integration.rowKey}`
-              );
-              break; // Salir del bucle si encontramos una coincidencia
-            }
-          }
-        } catch (parseError) {
-          logger.warn(
-            `Error al parsear config JSON para integración ${integration.rowKey}:`,
-            parseError
-          );
-        }
-      }
-
-      // Si encontramos una integración con el token correcto
-      if (tokenFound) {
-        logger.info(
-          `Verificación de webhook de WhatsApp exitosa (token encontrado en BD)`
-        );
-        return {
-          status: 200,
-          body: challenge, // Devolver el challenge como texto plano
-        };
-      } else {
-        logger.warn(
-          `Verificación de webhook de WhatsApp fallida: token "${receivedToken}" no encontrado en ninguna integración activa.`
-        );
-      }
-    } else {
-      logger.warn(
-        `Solicitud de verificación de webhook inválida. Faltan parámetros.`
-      );
+      return {
+        status: 500,
+        jsonBody: {
+          error: "Error de configuración: token de verificación no definido",
+        },
+      };
     }
 
-    // Si no se cumplen las condiciones o no se encuentra el token
-    return {
-      status: 403, // Forbidden
-      jsonBody: { error: "Verificación fallida" },
-    };
+    // Verificar que todos los parámetros necesarios estén presentes y que el token coincida
+    if (
+      mode === "subscribe" &&
+      receivedToken &&
+      challenge &&
+      receivedToken === verifyToken
+    ) {
+      logger.info("Verificación de webhook de WhatsApp exitosa");
+      return {
+        status: 200,
+        body: challenge, // Devolver el challenge como texto plano
+      };
+    } else {
+      // Si los parámetros están incompletos o el token no coincide
+      logger.warn(
+        `Verificación de webhook fallida: token inválido o parámetros incompletos`
+      );
+      return {
+        status: 403, // Forbidden
+        jsonBody: { error: "Verificación fallida" },
+      };
+    }
   } catch (error) {
     logger.error(
       "Error crítico en verificación de webhook de WhatsApp:",
