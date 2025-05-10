@@ -10,20 +10,19 @@ import {
   IntegrationStatus,
   IntegrationWhatsAppConfig,
 } from "../../models/integration.model";
-import {
-  MetaShortLivedTokenResponse,
-  MetaLongLivedTokenResponse,
-  WhatsAppBusinessAccountsResponse,
-  WhatsAppPhoneNumbersResponse,
-} from "../../models/meta.model";
 import { HttpResponseInit } from "@azure/functions";
 import fetch from "node-fetch";
 import {
   MessageRequest,
   MessageType,
   MessageStatus,
-} from "../../models/conversation.model";
-import { MessageReceiverHandler } from "../conversation/messageReceiverHandler";
+} from "../../models/conversation.model"; // Asegúrate que estén importados
+import { MessageReceiverHandler } from "../conversation/messageReceiverHandler"; // Importar el handler
+import {
+  MetaLongLivedTokenResponse,
+  MetaShortLivedTokenResponse,
+  WhatsAppPhoneNumbersResponse,
+} from "../../models/meta.model";
 
 export class WhatsAppIntegrationHandler {
   private storageService: StorageService;
@@ -331,26 +330,28 @@ export class WhatsAppIntegrationHandler {
 
   public async sendMessage(
     messageData: {
+      // Tipo más específico para los datos del mensaje
       integrationId: string;
-      to: string;
-      type: "text" | "template" | "image" | "document" | "interactive";
+      to: string; // Número del destinatario
+      type: "text" | "template" | "image" | "document" | "interactive"; // Tipos soportados
+      // Contenido varía según el tipo
       text?: { body: string; preview_url?: boolean };
       template?: {
         name: string;
         language: { code: string };
         components?: any[];
       };
-      image?: { id?: string; link?: string; caption?: string };
+      image?: { id?: string; link?: string; caption?: string }; // ID si ya está subida, link si es URL
       document?: {
         id?: string;
         link?: string;
         caption?: string;
         filename?: string;
       };
-      interactive?: any;
-      internalMessageId?: string;
+      interactive?: any; // Objeto complejo para botones/listas
+      internalMessageId?: string; // ID de nuestro sistema para logging/status
     },
-    userId: string
+    userId: string // ID del usuario de nuestra plataforma (para verificación de permisos)
   ): Promise<HttpResponseInit> {
     try {
       const { integrationId, to, type, internalMessageId } = messageData;
@@ -382,7 +383,7 @@ export class WhatsAppIntegrationHandler {
       const payload: any = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
-        to: to,
+        to: to, // Número del destinatario
         type: type,
       };
 
@@ -436,6 +437,7 @@ export class WhatsAppIntegrationHandler {
               jsonBody: { error: "Se requiere ID o link para el documento." },
             };
           }
+          // Se requiere filename si se usa link
           if (messageData.document.link && !messageData.document.filename) {
             return {
               status: 400,
@@ -454,8 +456,9 @@ export class WhatsAppIntegrationHandler {
               jsonBody: { error: "Faltan datos interactivos." },
             };
           }
-          payload.interactive = messageData.interactive;
+          payload.interactive = messageData.interactive; // Asume que ya tiene el formato correcto
           break;
+        // Añadir más tipos según sea necesario (audio, video, location, etc.)
         default:
           return {
             status: 400,
@@ -484,21 +487,22 @@ export class WhatsAppIntegrationHandler {
       );
 
       // 5. Manejar Respuesta de la API
-      const responseBody = await response.json();
+      const responseBody = await response.json(); // Leer cuerpo de respuesta independientemente del status
       if (!response.ok) {
         this.logger.error(
           `Error al enviar mensaje WA (${response.status}): ${JSON.stringify(
             responseBody
           )}`
         );
+        // Opcional: Actualizar estado del mensaje interno a FAILED si se proporcionó internalMessageId
         if (internalMessageId) {
-          // await this.updateInternalMessageStatus(internalMessageId, conversationId, MessageStatus.FAILED, responseBody);
+          // await this.updateInternalMessageStatus(internalMessageId, conversationId, MessageStatus.FAILED, responseBody); // Necesitarías conversationId
         }
         return {
-          status: 400,
+          status: 400, // O response.status si quieres propagar el error exacto
           jsonBody: {
             error: "Error al enviar mensaje a WhatsApp",
-            apiError: responseBody,
+            apiError: responseBody, // Devolver el error de la API
           },
         };
       }
@@ -506,8 +510,9 @@ export class WhatsAppIntegrationHandler {
       this.logger.info(
         `Respuesta de envío WA: ${JSON.stringify(responseBody)}`
       );
-      const waMessageId = responseBody.messages?.[0]?.id;
+      const waMessageId = responseBody.messages?.[0]?.id; // Obtener el ID del mensaje de WhatsApp
 
+      // 6. Registrar Éxito y Devolver Respuesta
       this.logMessageSent(
         integration.agentId,
         integrationId,
@@ -516,8 +521,9 @@ export class WhatsAppIntegrationHandler {
         waMessageId || "N/A"
       );
 
+      // Opcional: Actualizar mensaje interno con waMessageId en metadata
       if (internalMessageId && waMessageId) {
-        // await this.updateInternalMessageMetadata(internalMessageId, conversationId, { whatsapp: { waMessageId } });
+        // await this.updateInternalMessageMetadata(internalMessageId, conversationId, { whatsapp: { waMessageId } }); // Necesitarías conversationId
       }
 
       return {
@@ -526,7 +532,7 @@ export class WhatsAppIntegrationHandler {
           success: true,
           to: to,
           type: type,
-          waMessageId: waMessageId,
+          waMessageId: waMessageId, // Devolver el ID de WhatsApp
         },
       };
     } catch (error) {
@@ -542,7 +548,7 @@ export class WhatsAppIntegrationHandler {
   }
 
   public async processWebhook(webhookData: any): Promise<void> {
-    this.logger.info(`Procesando webhook: ${JSON.stringify(webhookData)}`);
+    this.logger.info(`Procesando webhook: ${JSON.stringify(webhookData)}`); // Log detallado
 
     try {
       if (
@@ -570,6 +576,7 @@ export class WhatsAppIntegrationHandler {
             continue;
           }
 
+          // Encontrar la integración activa para este número
           const integration = await this.findIntegrationByPhoneNumberId(
             phoneNumberId
           );
@@ -577,9 +584,10 @@ export class WhatsAppIntegrationHandler {
             this.logger.warn(
               `Webhook recibido para un número no configurado o inactivo: ${phoneNumberId}`
             );
-            continue;
+            continue; // Ignorar si no hay integración activa
           }
 
+          // --- Procesar Mensajes Entrantes ---
           if (messages && messages.length > 0) {
             const contact =
               contacts && contacts.length > 0 ? contacts[0] : null;
@@ -588,6 +596,7 @@ export class WhatsAppIntegrationHandler {
             }
           }
 
+          // --- Procesar Actualizaciones de Estado ---
           if (statuses && statuses.length > 0) {
             for (const statusUpdate of statuses) {
               await this.processStatusUpdate(integration, statusUpdate);
@@ -600,6 +609,7 @@ export class WhatsAppIntegrationHandler {
         "Error detallado al procesar webhook de WhatsApp:",
         error
       );
+      // No lanzar error para que WhatsApp no reintente indefinidamente
     }
   }
 
@@ -607,10 +617,10 @@ export class WhatsAppIntegrationHandler {
     integration: Integration,
     statusUpdate: any
   ): Promise<void> {
-    const messageId = statusUpdate.id;
-    const status = statusUpdate.status;
+    const messageId = statusUpdate.id; // ID del mensaje de WhatsApp que enviamos
+    const status = statusUpdate.status; // sent, delivered, read, failed
     const timestamp = parseInt(statusUpdate.timestamp) * 1000;
-    const recipientId = statusUpdate.recipient_id;
+    const recipientId = statusUpdate.recipient_id; // Número del destinatario
 
     this.logger.info(
       `Actualización de estado recibida para mensaje WA ${messageId}: ${status}`
@@ -621,7 +631,11 @@ export class WhatsAppIntegrationHandler {
         STORAGE_TABLES.MESSAGES
       );
 
-      const filter = `metadata/whatsapp/waMessageId eq '${messageId}'`;
+      // Buscar el mensaje en nuestra tabla usando el ID de WhatsApp (almacenado en metadata)
+      // Esto requiere que guardes `waMessageId` en los metadatos al enviar
+      // Consulta más compleja, podría ser lenta si hay muchos mensajes.
+      // Alternativa: Usar `messageId` interno si lo devuelves al enviar y lo mapeas.
+      const filter = `metadata/whatsapp/waMessageId eq '${messageId}'`; // Asumiendo que guardas el ID de WA así
       const messages = messagesTableClient.listEntities({
         queryOptions: { filter },
       });
@@ -647,9 +661,10 @@ export class WhatsAppIntegrationHandler {
             newStatus = MessageStatus.FAILED;
             break;
           default:
-            newStatus = message.status as MessageStatus;
+            newStatus = message.status as MessageStatus; // No cambiar si es desconocido
         }
 
+        // Actualizar solo si el nuevo estado es "posterior" al actual
         const statusOrder = [
           MessageStatus.SENT,
           MessageStatus.DELIVERED,
@@ -668,7 +683,7 @@ export class WhatsAppIntegrationHandler {
             partitionKey: conversationId,
             rowKey: internalMessageId,
             status: newStatus,
-            updatedAt: timestamp,
+            updatedAt: timestamp, // Usar el timestamp del evento de estado
           };
           if (status === "failed" && statusUpdate.errors) {
             updatePayload.errorMessage = JSON.stringify(
@@ -685,6 +700,7 @@ export class WhatsAppIntegrationHandler {
             `Estado ${status} ignorado para mensaje ${internalMessageId} (estado actual: ${message.status})`
           );
         }
+        // Podríamos parar si encontramos el mensaje, asumiendo IDs únicos
         break;
       }
 
@@ -698,6 +714,7 @@ export class WhatsAppIntegrationHandler {
         `Error al procesar actualización de estado para mensaje WA ${messageId}:`,
         error
       );
+      // No relanzar
     }
   }
 
@@ -707,6 +724,7 @@ export class WhatsAppIntegrationHandler {
     userId: string
   ): Promise<HttpResponseInit> {
     try {
+      // Verificar si la integración existe
       const integration = await this.fetchIntegration(integrationId);
 
       if (!integration) {
@@ -716,6 +734,7 @@ export class WhatsAppIntegrationHandler {
         };
       }
 
+      // Verificar acceso
       const hasAccess = await this.verifyAccess(integration.agentId, userId);
       if (!hasAccess) {
         return {
@@ -726,6 +745,7 @@ export class WhatsAppIntegrationHandler {
         };
       }
 
+      // Actualizar configuración
       const config = JSON.parse(
         integration.config as string
       ) as IntegrationWhatsAppConfig;
@@ -738,6 +758,7 @@ export class WhatsAppIntegrationHandler {
         messagingLimit: data.messagingLimit || config.messagingLimit,
       };
 
+      // Preparar datos para actualización
       const updateData: any = {
         partitionKey: integration.agentId,
         rowKey: integrationId,
@@ -745,18 +766,22 @@ export class WhatsAppIntegrationHandler {
         updatedAt: Date.now(),
       };
 
+      // Si se proporciona un nuevo nombre
       if (data.name) {
         updateData.name = data.name;
       }
 
+      // Si se proporciona nueva descripción
       if (data.description) {
         updateData.description = data.description;
       }
 
+      // Si se proporciona nuevo token
       if (data.accessToken) {
-        updateData.credentials = data.accessToken;
+        updateData.credentials = data.accessToken; // En producción, encriptar
       }
 
+      // Actualizar en Table Storage
       const tableClient = this.storageService.getTableClient(
         STORAGE_TABLES.INTEGRATIONS
       );
@@ -786,6 +811,8 @@ export class WhatsAppIntegrationHandler {
     }
   }
 
+  // Métodos auxiliares
+
   private async fetchIntegration(
     integrationId: string
   ): Promise<Integration | null> {
@@ -794,6 +821,7 @@ export class WhatsAppIntegrationHandler {
         STORAGE_TABLES.INTEGRATIONS
       );
 
+      // Buscar en todas las particiones
       const integrations = tableClient.listEntities({
         queryOptions: { filter: `RowKey eq '${integrationId}'` },
       });
@@ -817,6 +845,7 @@ export class WhatsAppIntegrationHandler {
         STORAGE_TABLES.INTEGRATIONS
       );
 
+      // Buscar integraciones de WhatsApp
       const integrations = tableClient.listEntities({
         queryOptions: {
           filter: `provider eq 'whatsapp' and isActive eq true`,
@@ -849,6 +878,7 @@ export class WhatsAppIntegrationHandler {
     userId: string
   ): Promise<boolean> {
     try {
+      // Verificar si el usuario es propietario del agente
       const agentsTable = this.storageService.getTableClient(
         STORAGE_TABLES.AGENTS
       );
@@ -863,6 +893,7 @@ export class WhatsAppIntegrationHandler {
         return false;
       }
 
+      // Verificar si el usuario tiene algún rol en el agente
       const rolesTable = this.storageService.getTableClient(
         STORAGE_TABLES.USER_ROLES
       );
@@ -950,15 +981,16 @@ export class WhatsAppIntegrationHandler {
   ): Promise<void> {
     try {
       const agentId = integration.agentId;
-      const from = message.from;
-      const waMessageId = message.id;
-      const timestamp = parseInt(message.timestamp) * 1000;
+      const from = message.from; // Número del usuario
+      const waMessageId = message.id; // ID del mensaje de WhatsApp
+      const timestamp = parseInt(message.timestamp) * 1000; // Convertir a ms
       const profileName = contact?.profile?.name || "Usuario de WhatsApp";
 
       let content = "";
       let messageType: MessageType = MessageType.TEXT;
       let attachments: Record<string, any> | undefined = undefined;
 
+      // Determinar tipo de mensaje y extraer contenido
       switch (message.type) {
         case "text":
           content = message.text?.body || "";
@@ -973,6 +1005,7 @@ export class WhatsAppIntegrationHandler {
               mime_type: message.image?.mime_type,
             },
           };
+          // TODO: Lógica para descargar la imagen usando el ID y accessToken
           this.logger.info(`Imagen recibida: ${message.image?.id}`);
           break;
         case "document":
@@ -985,6 +1018,7 @@ export class WhatsAppIntegrationHandler {
               mime_type: message.document?.mime_type,
             },
           };
+          // TODO: Lógica para descargar el documento
           this.logger.info(`Documento recibido: ${message.document?.filename}`);
           break;
         case "audio":
@@ -996,18 +1030,20 @@ export class WhatsAppIntegrationHandler {
               mime_type: message.audio?.mime_type,
             },
           };
+          // TODO: Lógica para descargar el audio
           this.logger.info(`Audio recibido: ${message.audio?.id}`);
           break;
         case "interactive":
+          // Respuestas a botones o listas
           if (message.interactive?.button_reply) {
-            content = message.interactive.button_reply.title;
-            messageType = MessageType.TEXT;
+            content = message.interactive.button_reply.title; // Texto del botón
+            messageType = MessageType.TEXT; // Tratar como texto
             this.logger.info(
               `Respuesta de botón recibida: ${content} (ID: ${message.interactive.button_reply.id})`
             );
           } else if (message.interactive?.list_reply) {
-            content = message.interactive.list_reply.title;
-            messageType = MessageType.TEXT;
+            content = message.interactive.list_reply.title; // Texto del item seleccionado
+            messageType = MessageType.TEXT; // Tratar como texto
             this.logger.info(
               `Respuesta de lista recibida: ${content} (ID: ${message.interactive.list_reply.id})`
             );
@@ -1016,44 +1052,60 @@ export class WhatsAppIntegrationHandler {
               "Mensaje interactivo desconocido:",
               message.interactive
             );
-            return;
+            return; // Ignorar tipos interactivos no manejados
           }
           break;
+        // Añadir casos para video, location, contacts, etc. si es necesario
         default:
           this.logger.warn(
             `Tipo de mensaje de WhatsApp no manejado: ${message.type}`
           );
-          return;
+          return; // Ignorar tipos no soportados
       }
 
       if (!content && !attachments) {
         this.logger.warn(
           `Mensaje de tipo ${message.type} sin contenido procesable.`
         );
-        return;
+        return; // No procesar si no hay nada útil
       }
 
+      // Preparar el MessageRequest para el bot core
       const messageRequest: MessageRequest = {
         agentId,
-        content: content || `[${messageType}]`,
+        content: content || `[${messageType}]`, // Contenido o placeholder
         messageType: messageType,
         sourceChannel: "whatsapp",
+        // Pasamos 'userId' como null o un identificador genérico,
+        // ya que MessageReceiverHandler lo buscará o creará basado en 'from'
+        // Opcionalmente, podrías buscar/crear el 'endUserId' aquí
         metadata: {
           whatsapp: {
-            from: from,
+            from: from, // Número del usuario
             fromName: profileName,
-            waMessageId: waMessageId,
+            waMessageId: waMessageId, // ID del mensaje original de WA
             timestamp: timestamp,
             integrationId: integration.id,
           },
-          attachments: attachments,
+          // Puedes añadir otros metadatos aquí si son relevantes
+          attachments: attachments, // Incluir IDs de media si existen
         },
       };
 
+      // Usar MessageReceiverHandler para procesar el mensaje
+      // NOTA: MessageReceiverHandler necesita ser capaz de manejar mensajes
+      // sin un 'userId' preexistente, identificando/creando al usuario final
+      // basado en 'messageRequest.metadata.whatsapp.from'.
       const messageReceiverHandler = new MessageReceiverHandler(this.logger);
 
-      const placeholderUserId = `whatsapp:${from}`;
+      // Idealmente, MessageReceiverHandler debería aceptar metadatos para buscar/crear
+      // el usuario final y la conversación. Asumimos que puede hacerlo.
+      // Puede que necesites ajustar MessageReceiverHandler.
+      // Aquí pasamos un userId placeholder o nulo si tu handler lo requiere.
+      // Lo más robusto sería que el handler usara 'from' para gestionar al usuario final.
+      const placeholderUserId = `whatsapp:${from}`; // Ejemplo de ID de usuario final
 
+      // Ejecutar el handler (asumiendo que maneja la creación/búsqueda de conversación)
       await messageReceiverHandler.execute(messageRequest, placeholderUserId);
 
       this.logger.info(
@@ -1064,6 +1116,7 @@ export class WhatsAppIntegrationHandler {
         `Error al procesar mensaje entrante de WhatsApp ${message?.id}:`,
         error
       );
+      // No relanzar para evitar reintentos de WhatsApp
     }
   }
 
@@ -1072,9 +1125,21 @@ export class WhatsAppIntegrationHandler {
     userId: string
   ): Promise<HttpResponseInit> {
     try {
+      // Validaciones iniciales
+      if (!data || typeof data !== "object") {
+        return { status: 400, jsonBody: { error: "Datos inválidos" } };
+      }
+
       const { code, agentId } = data;
 
-      // Verificar acceso al agente
+      if (!code || !agentId) {
+        return {
+          status: 400,
+          jsonBody: { error: "Se requiere code y agentId" },
+        };
+      }
+
+      // Verificar acceso
       const hasAccess = await this.verifyAccess(agentId, userId);
       if (!hasAccess) {
         return {
@@ -1083,7 +1148,7 @@ export class WhatsAppIntegrationHandler {
         };
       }
 
-      // 1. Intercambiar código por token de corta duración
+      // Validar configuración
       const appId = process.env.META_APP_ID;
       const appSecret = process.env.META_APP_SECRET;
       const redirectUri =
@@ -1099,161 +1164,206 @@ export class WhatsAppIntegrationHandler {
         };
       }
 
-      try {
-        // Obtener token de corta duración
-        const shortLivedTokenResponse = await fetch(
-          `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(
-            redirectUri
-          )}&client_secret=${appSecret}&code=${code}`,
-          { method: "GET" }
+      // Paso 1: Intercambiar code por short-lived token
+      const shortLivedTokenUrl = new URL(
+        "https://graph.facebook.com/v22.0/oauth/access_token"
+      );
+      shortLivedTokenUrl.searchParams.append("client_id", appId);
+      shortLivedTokenUrl.searchParams.append("client_secret", appSecret);
+      shortLivedTokenUrl.searchParams.append("redirect_uri", redirectUri);
+      shortLivedTokenUrl.searchParams.append("code", code);
+
+      const shortLivedTokenResponse = await fetch(
+        shortLivedTokenUrl.toString(),
+        { method: "GET" }
+      );
+      if (!shortLivedTokenResponse.ok) {
+        const errorText = await shortLivedTokenResponse.text();
+        this.logger.error(
+          `Error al obtener token de corta duración: ${errorText}`
         );
-
-        if (!shortLivedTokenResponse.ok) {
-          const errorText = await shortLivedTokenResponse.text();
-          this.logger.error(
-            `Error al obtener token de corta duración: ${errorText}`
-          );
-          return {
-            status: 400,
-            jsonBody: {
-              error: "Error al intercambiar código de autorización",
-              apiError: errorText,
-            },
-          };
-        }
-
-        const shortLivedToken =
-          (await shortLivedTokenResponse.json()) as MetaShortLivedTokenResponse;
-
-        // 2. Intercambiar token de corta duración por token de larga duración
-        const longLivedTokenResponse = await fetch(
-          `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken.access_token}`,
-          { method: "GET" }
-        );
-
-        if (!longLivedTokenResponse.ok) {
-          const errorText = await longLivedTokenResponse.text();
-          this.logger.error(
-            `Error al obtener token de larga duración: ${errorText}`
-          );
-          return {
-            status: 400,
-            jsonBody: {
-              error: "Error al obtener token de larga duración",
-              apiError: errorText,
-            },
-          };
-        }
-
-        const longLivedToken =
-          (await longLivedTokenResponse.json()) as MetaLongLivedTokenResponse;
-        const accessToken = longLivedToken.access_token;
-
-        // 3. Obtener información de la cuenta de WhatsApp Business
-        const wabaResponse = await fetch(
-          `https://graph.facebook.com/v18.0/me/businesses?access_token=${accessToken}&fields=whatsapp_business_accounts`,
-          { method: "GET" }
-        );
-
-        if (!wabaResponse.ok) {
-          const errorText = await wabaResponse.text();
-          this.logger.error(
-            `Error al obtener cuentas de WhatsApp Business: ${errorText}`
-          );
-          return {
-            status: 400,
-            jsonBody: {
-              error: "Error al obtener información de WhatsApp Business",
-              apiError: errorText,
-            },
-          };
-        }
-
-        const wabaData = await wabaResponse.json();
-        const whatsappBusinessAccounts =
-          wabaData.data[0]?.whatsapp_business_accounts;
-
-        if (
-          !whatsappBusinessAccounts ||
-          whatsappBusinessAccounts.data.length === 0
-        ) {
-          return {
-            status: 400,
-            jsonBody: {
-              error: "No se encontraron cuentas de WhatsApp Business",
-            },
-          };
-        }
-
-        const businessAccountId = whatsappBusinessAccounts.data[0].id;
-
-        // 4. Obtener números de teléfono asociados a la cuenta
-        const phonesResponse = await fetch(
-          `https://graph.facebook.com/v18.0/${businessAccountId}/phone_numbers?access_token=${accessToken}`,
-          { method: "GET" }
-        );
-
-        if (!phonesResponse.ok) {
-          const errorText = await phonesResponse.text();
-          this.logger.error(
-            `Error al obtener números de teléfono: ${errorText}`
-          );
-          return {
-            status: 400,
-            jsonBody: {
-              error: "Error al obtener números de teléfono",
-              apiError: errorText,
-            },
-          };
-        }
-
-        const phonesData =
-          (await phonesResponse.json()) as WhatsAppPhoneNumbersResponse;
-
-        if (!phonesData.data || phonesData.data.length === 0) {
-          return {
-            status: 400,
-            jsonBody: {
-              error: "No se encontraron números de teléfono asociados",
-            },
-          };
-        }
-
-        const phone = phonesData.data[0];
-
-        // 5. Crear configuración para la integración
-        const webhookVerifyToken = uuidv4(); // Generar token único para verificación de webhook
-
-        const integrationData = {
-          agentId,
-          name: `WhatsApp - ${phone.verified_name}`,
-          phoneNumberId: phone.id,
-          businessAccountId,
-          accessToken,
-          webhookVerifyToken,
-          phoneNumber: phone.display_phone_number,
-          displayName: phone.verified_name,
-        };
-
-        // 6. Guardar la integración utilizando el método existente
-        return await this.setupIntegration(integrationData, userId);
-      } catch (error) {
-        this.logger.error("Error en el proceso de Embedded Signup:", error);
         return {
-          status: 500,
+          status: 400,
           jsonBody: {
-            error: "Error al procesar la integración",
-            details: error instanceof Error ? error.message : String(error),
+            error: "Error al intercambiar código",
+            apiError: errorText,
           },
         };
       }
+      const shortLivedToken = await shortLivedTokenResponse.json();
+
+      // Paso 2: Obtener long-lived token
+      const longLivedTokenUrl = new URL(
+        "https://graph.facebook.com/v22.0/oauth/access_token"
+      );
+      longLivedTokenUrl.searchParams.append("grant_type", "fb_exchange_token");
+      longLivedTokenUrl.searchParams.append("client_id", appId);
+      longLivedTokenUrl.searchParams.append("client_secret", appSecret);
+      longLivedTokenUrl.searchParams.append(
+        "fb_exchange_token",
+        shortLivedToken.access_token
+      );
+
+      const longLivedTokenResponse = await fetch(longLivedTokenUrl.toString(), {
+        method: "GET",
+      });
+      if (!longLivedTokenResponse.ok) {
+        const errorText = await longLivedTokenResponse.text();
+        this.logger.error(
+          `Error al obtener token de larga duración: ${errorText}`
+        );
+        return {
+          status: 400,
+          jsonBody: {
+            error: "Error al obtener token largo",
+            apiError: errorText,
+          },
+        };
+      }
+      const longLivedToken = await longLivedTokenResponse.json();
+      const accessToken = longLivedToken.access_token;
+
+      // Validar el token obtenido
+      if (!accessToken) {
+        this.logger.error("No se pudo obtener un token de acceso válido");
+        return { status: 400, jsonBody: { error: "Token de acceso inválido" } };
+      }
+
+      // Paso 3: Obtener business ID desde /me
+      const meUrl = new URL("https://graph.facebook.com/v22.0/me");
+      meUrl.searchParams.append("fields", "businesses");
+      meUrl.searchParams.append("access_token", accessToken);
+
+      const meResponse = await fetch(meUrl.toString(), { method: "GET" });
+      if (!meResponse.ok) {
+        const errorText = await meResponse.text();
+        this.logger.error(`Error al obtener negocios desde /me: ${errorText}`);
+        return {
+          status: 400,
+          jsonBody: {
+            error: "No se pudo obtener el business ID",
+            apiError: errorText,
+          },
+        };
+      }
+      const meData = await meResponse.json();
+      const businesses = meData.businesses?.data;
+      if (!businesses || businesses.length === 0) {
+        return {
+          status: 400,
+          jsonBody: { error: "No se encontraron cuentas de negocio" },
+        };
+      }
+      const businessId = businesses[0].id;
+
+      // Paso 4: Obtener cuenta de WhatsApp Business
+      const wabaUrl = new URL(
+        `https://graph.facebook.com/v22.0/${businessId}/owned_whatsapp_business_accounts`
+      );
+      wabaUrl.searchParams.append("access_token", accessToken);
+
+      const wabaResponse = await fetch(wabaUrl.toString(), { method: "GET" });
+      if (!wabaResponse.ok) {
+        const errorText = await wabaResponse.text();
+        this.logger.error(`Error al obtener cuenta WABA: ${errorText}`);
+        return {
+          status: 400,
+          jsonBody: { error: "Error al obtener WABA", apiError: errorText },
+        };
+      }
+      const wabaData = await wabaResponse.json();
+      const whatsappBusinessAccounts = wabaData.data;
+      if (!whatsappBusinessAccounts || whatsappBusinessAccounts.length === 0) {
+        return {
+          status: 400,
+          jsonBody: { error: "No se encontró cuenta WABA" },
+        };
+      }
+      const businessAccountId = whatsappBusinessAccounts[0].id;
+
+      // Paso 5: Obtener números de teléfono
+      const phonesUrl = new URL(
+        `https://graph.facebook.com/v22.0/${businessAccountId}/phone_numbers`
+      );
+      phonesUrl.searchParams.append("access_token", accessToken);
+      phonesUrl.searchParams.append(
+        "fields",
+        "id,display_phone_number,verified_name,quality_rating,code_verification_status"
+      );
+
+      const phonesResponse = await fetch(phonesUrl.toString(), {
+        method: "GET",
+      });
+      if (!phonesResponse.ok) {
+        const errorText = await phonesResponse.text();
+        this.logger.error(`Error al obtener números de teléfono: ${errorText}`);
+        return {
+          status: 400,
+          jsonBody: { error: "Error al obtener números", apiError: errorText },
+        };
+      }
+      const phonesData = await phonesResponse.json();
+      if (!phonesData.data || phonesData.data.length === 0) {
+        return {
+          status: 400,
+          jsonBody: { error: "No se encontraron números de teléfono" },
+        };
+      }
+
+      const phone = phonesData.data[0];
+      const webhookVerifyToken = uuidv4();
+
+      // Paso 6: Suscribir la aplicación al número de teléfono (importante y faltante en tu implementación)
+      const subscribeUrl = new URL(
+        `https://graph.facebook.com/v22.0/${phone.id}/subscribed_apps`
+      );
+      subscribeUrl.searchParams.append("access_token", accessToken);
+
+      const subscribeResponse = await fetch(subscribeUrl.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!subscribeResponse.ok) {
+        const errorText = await subscribeResponse.text();
+        this.logger.error(
+          `Error al suscribir app a los webhooks: ${errorText}`
+        );
+        return {
+          status: 400,
+          jsonBody: { error: "Error al suscribir app", apiError: errorText },
+        };
+      }
+
+      // Registrar la fecha de expiración del token (si está disponible)
+      const tokenExpiry = longLivedToken.expires_in
+        ? new Date(Date.now() + longLivedToken.expires_in * 1000)
+        : null;
+
+      const integrationData = {
+        agentId,
+        name: `WhatsApp - ${phone.verified_name || phone.display_phone_number}`,
+        phoneNumberId: phone.id,
+        businessAccountId,
+        accessToken,
+        webhookVerifyToken,
+        phoneNumber: phone.display_phone_number,
+        displayName: phone.verified_name,
+        tokenExpiry: tokenExpiry ? tokenExpiry.toISOString() : null,
+        qualityRating: phone.quality_rating,
+        verificationStatus: phone.code_verification_status,
+      };
+
+      return await this.setupIntegration(integrationData, userId);
     } catch (error) {
       this.logger.error("Error en handleEmbeddedSignupCode:", error);
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       return {
         status: 500,
-        jsonBody: { error: `Error al procesar código: ${errorMessage}` },
+        jsonBody: { error: `Error inesperado: ${errorMessage}` },
       };
     }
   }
