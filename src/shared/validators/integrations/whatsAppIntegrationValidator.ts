@@ -20,7 +20,7 @@ export class WhatsAppIntegrationValidator {
     const errors: string[] = [];
 
     // Validar campos requeridos
-    if (!data.code) {
+    if (!data.esIntegrationCode) {
       errors.push("Código de autorización es requerido");
     }
 

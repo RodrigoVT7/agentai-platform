@@ -1204,249 +1204,260 @@ export class WhatsAppIntegrationHandler {
   }
 
   async handleEmbeddedSignupCode(
-    data: any,
+    requestBody: any,
     userId: string
   ): Promise<HttpResponseInit> {
     try {
-      // Validaciones iniciales
-      if (!data || typeof data !== "object") {
-        return { status: 400, jsonBody: { error: "Datos inválidos" } };
-      }
-
-      const { code, agentId } = data;
-
-      if (!code || !agentId) {
+      // ===================== 1. Validación de entrada =====================
+      if (!requestBody || typeof requestBody !== "object") {
         return {
           status: 400,
-          jsonBody: { error: "Se requiere code y agentId" },
+          jsonBody: {
+            error: "Payload inválido",
+            code: "INVALID_PAYLOAD",
+          },
         };
       }
 
-      // Verificar acceso
-      const hasAccess = await this.verifyAccess(agentId, userId);
-      if (!hasAccess) {
+      const {
+        agentId,
+        esIntegrationCode,
+        phoneNumberId,
+        waba_id: wabaId,
+        business_id: businessId,
+      } = requestBody;
+
+      const required = {
+        agentId,
+        esIntegrationCode,
+        phoneNumberId,
+        wabaId,
+        businessId,
+      };
+      const missing = Object.entries(required)
+        .filter(([_, v]) => !v)
+        .map(([k]) => k);
+      if (missing.length) {
+        return {
+          status: 400,
+          jsonBody: {
+            error: `Faltan campos obligatorios: ${missing.join(", ")}`,
+            code: "MISSING_FIELDS",
+            missing,
+          },
+        };
+      }
+
+      // ===================== 2. Verificación de permisos =====================
+      if (!(await this.verifyAccess(agentId, userId))) {
         return {
           status: 403,
-          jsonBody: { error: "No tienes permiso para modificar este agente" },
+          jsonBody: {
+            error: "Sin permiso para modificar este agente",
+            code: "ACCESS_DENIED",
+          },
         };
       }
 
-      // Validar configuración
+      // ===================== 3. Configuración de entorno =====================
       const appId = process.env.META_APP_ID;
       const appSecret = process.env.META_APP_SECRET;
       const redirectUri =
         process.env.META_WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI;
-
       if (!appId || !appSecret || !redirectUri) {
-        this.logger.error(
-          "Faltan variables de entorno para la integración con Meta"
-        );
         return {
           status: 500,
-          jsonBody: { error: "Error de configuración del servidor" },
-        };
-      }
-
-      // Paso 1: Intercambiar code por short-lived token
-      const shortLivedTokenUrl = new URL(
-        "https://graph.facebook.com/v22.0/oauth/access_token"
-      );
-      shortLivedTokenUrl.searchParams.append("client_id", appId);
-      shortLivedTokenUrl.searchParams.append("client_secret", appSecret);
-      shortLivedTokenUrl.searchParams.append("redirect_uri", redirectUri);
-      shortLivedTokenUrl.searchParams.append("code", code);
-
-      const shortLivedTokenResponse = await fetch(
-        shortLivedTokenUrl.toString(),
-        { method: "GET" }
-      );
-      if (!shortLivedTokenResponse.ok) {
-        const errorText = await shortLivedTokenResponse.text();
-        this.logger.error(
-          `Error al obtener token de corta duración: ${errorText}`
-        );
-        return {
-          status: 400,
           jsonBody: {
-            error: "Error al intercambiar código",
-            apiError: errorText,
+            error: "Error de configuración en el servidor",
+            code: "CONFIG_ERROR",
           },
         };
       }
-      const shortLivedToken = await shortLivedTokenResponse.json();
 
-      // Paso 2: Obtener long-lived token
-      const longLivedTokenUrl = new URL(
+      // ===================== 4. Obtener token de corta duración =====================
+      const exchangeUrl = new URL(
         "https://graph.facebook.com/v22.0/oauth/access_token"
       );
-      longLivedTokenUrl.searchParams.append("grant_type", "fb_exchange_token");
-      longLivedTokenUrl.searchParams.append("client_id", appId);
-      longLivedTokenUrl.searchParams.append("client_secret", appSecret);
-      longLivedTokenUrl.searchParams.append(
+      exchangeUrl.searchParams.append("client_id", appId);
+      exchangeUrl.searchParams.append("client_secret", appSecret);
+      exchangeUrl.searchParams.append("code", esIntegrationCode);
+
+      const shortRes = await fetch(exchangeUrl.toString(), {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!shortRes.ok) {
+        const err = await shortRes.text();
+        return {
+          status: 400,
+          jsonBody: {
+            error: "Fallo intercambio de code",
+            code: "AUTH_CODE_EXCHANGE_FAIL",
+            details: err,
+          },
+        };
+      }
+      const shortToken = await shortRes.json();
+
+      // ===================== 5. Convertir a token de larga duración =====================
+      const longTokenUrl = new URL(
+        "https://graph.facebook.com/v22.0/oauth/access_token"
+      );
+      longTokenUrl.searchParams.set("grant_type", "fb_exchange_token");
+      longTokenUrl.searchParams.set("client_id", appId);
+      longTokenUrl.searchParams.set("client_secret", appSecret);
+      longTokenUrl.searchParams.set(
         "fb_exchange_token",
-        shortLivedToken.access_token
+        shortToken.access_token
       );
 
-      const longLivedTokenResponse = await fetch(longLivedTokenUrl.toString(), {
-        method: "GET",
-      });
-      if (!longLivedTokenResponse.ok) {
-        const errorText = await longLivedTokenResponse.text();
-        this.logger.error(
-          `Error al obtener token de larga duración: ${errorText}`
-        );
+      const longRes = await fetch(longTokenUrl.toString(), { method: "GET" });
+      if (!longRes.ok) {
+        const err = await longRes.text();
         return {
           status: 400,
           jsonBody: {
-            error: "Error al obtener token largo",
-            apiError: errorText,
+            error: "Fallo obtención de token largo",
+            code: "LONG_TOKEN_EXCHANGE_FAIL",
+            details: err,
           },
         };
       }
-      const longLivedToken = await longLivedTokenResponse.json();
-      const accessToken = longLivedToken.access_token;
+      const longTokenResponse = await longRes.json();
+      const longToken = {
+        access_token: longTokenResponse.access_token,
+        token_type: longTokenResponse.token_type || "bearer",
+      };
+      const accessToken = longToken.access_token;
 
-      // Validar el token obtenido
-      if (!accessToken) {
-        this.logger.error("No se pudo obtener un token de acceso válido");
-        return { status: 400, jsonBody: { error: "Token de acceso inválido" } };
-      }
-
-      // Paso 3: Obtener business ID desde /me
-      const meUrl = new URL("https://graph.facebook.com/v22.0/me");
-      meUrl.searchParams.append("fields", "businesses");
-      meUrl.searchParams.append("access_token", accessToken);
-
-      const meResponse = await fetch(meUrl.toString(), { method: "GET" });
-      if (!meResponse.ok) {
-        const errorText = await meResponse.text();
-        this.logger.error(`Error al obtener negocios desde /me: ${errorText}`);
-        return {
-          status: 400,
-          jsonBody: {
-            error: "No se pudo obtener el business ID",
-            apiError: errorText,
-          },
-        };
-      }
-      const meData = await meResponse.json();
-      const businesses = meData.businesses?.data;
-      if (!businesses || businesses.length === 0) {
-        return {
-          status: 400,
-          jsonBody: { error: "No se encontraron cuentas de negocio" },
-        };
-      }
-      const businessId = businesses[0].id;
-
-      // Paso 4: Obtener cuenta de WhatsApp Business
-      const wabaUrl = new URL(
-        `https://graph.facebook.com/v22.0/${businessId}/owned_whatsapp_business_accounts`
+      // ===================== 6. Obtener datos del número de teléfono =====================
+      const phoneUrl = new URL(
+        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`
       );
-      wabaUrl.searchParams.append("access_token", accessToken);
-
-      const wabaResponse = await fetch(wabaUrl.toString(), { method: "GET" });
-      if (!wabaResponse.ok) {
-        const errorText = await wabaResponse.text();
-        this.logger.error(`Error al obtener cuenta WABA: ${errorText}`);
-        return {
-          status: 400,
-          jsonBody: { error: "Error al obtener WABA", apiError: errorText },
-        };
-      }
-      const wabaData = await wabaResponse.json();
-      const whatsappBusinessAccounts = wabaData.data;
-      if (!whatsappBusinessAccounts || whatsappBusinessAccounts.length === 0) {
-        return {
-          status: 400,
-          jsonBody: { error: "No se encontró cuenta WABA" },
-        };
-      }
-      const businessAccountId = whatsappBusinessAccounts[0].id;
-
-      // Paso 5: Obtener números de teléfono
-      const phonesUrl = new URL(
-        `https://graph.facebook.com/v22.0/${businessAccountId}/phone_numbers`
-      );
-      phonesUrl.searchParams.append("access_token", accessToken);
-      phonesUrl.searchParams.append(
+      phoneUrl.searchParams.set(
         "fields",
-        "id,display_phone_number,verified_name,quality_rating,code_verification_status"
+        "id,cc,country_dial_code,display_phone_number,verified_name,status,quality_rating,search_visibility,platform_type,code_verification_status"
       );
-
-      const phonesResponse = await fetch(phonesUrl.toString(), {
+      phoneUrl.searchParams.set("access_token", accessToken);
+      const phoneRes = await fetch(phoneUrl.toString(), {
         method: "GET",
-      });
-      if (!phonesResponse.ok) {
-        const errorText = await phonesResponse.text();
-        this.logger.error(`Error al obtener números de teléfono: ${errorText}`);
-        return {
-          status: 400,
-          jsonBody: { error: "Error al obtener números", apiError: errorText },
-        };
-      }
-      const phonesData = await phonesResponse.json();
-      if (!phonesData.data || phonesData.data.length === 0) {
-        return {
-          status: 400,
-          jsonBody: { error: "No se encontraron números de teléfono" },
-        };
-      }
-
-      const phone = phonesData.data[0];
-      const webhookVerifyToken = uuidv4();
-
-      // Paso 6: Suscribir la aplicación al número de teléfono (importante y faltante en tu implementación)
-      const subscribeUrl = new URL(
-        `https://graph.facebook.com/v22.0/${phone.id}/subscribed_apps`
-      );
-      subscribeUrl.searchParams.append("access_token", accessToken);
-
-      const subscribeResponse = await fetch(subscribeUrl.toString(), {
-        method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
         },
       });
 
-      if (!subscribeResponse.ok) {
-        const errorText = await subscribeResponse.text();
-        this.logger.error(
-          `Error al suscribir app a los webhooks: ${errorText}`
-        );
+      if (!phoneRes.ok) {
+        const err = await phoneRes.text();
         return {
           status: 400,
-          jsonBody: { error: "Error al suscribir app", apiError: errorText },
+          jsonBody: {
+            error: "No se pudo recuperar los datos de los números de teléfono",
+            code: "PHONE_FETCH_FAIL",
+            details: err,
+          },
         };
       }
 
-      // Registrar la fecha de expiración del token (si está disponible)
-      const tokenExpiry = longLivedToken.expires_in
-        ? new Date(Date.now() + longLivedToken.expires_in * 1000)
-        : null;
+      const phoneResponse = await phoneRes.json();
+      const phoneData = phoneResponse.data.find(
+        (phone: any) => phone.id === phoneNumberId
+      );
 
-      const integrationData = {
+      if (!phoneData) {
+        return {
+          status: 400,
+          jsonBody: {
+            error:
+              "El número de teléfono especificado no se encontró en la cuenta",
+            code: "PHONE_NOT_FOUND",
+          },
+        };
+      }
+
+      // ===================== 7. Suscribir la aplicación =====================
+      const subscribeUrl = new URL(
+        `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`
+      );
+      const subscribeRes = await fetch(subscribeUrl.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (!subscribeRes.ok) {
+        const err = await subscribeRes.text();
+        return {
+          status: 400,
+          jsonBody: {
+            error: "No se pudo suscribir la aplicación al número de teléfono",
+            code: "APP_SUBSCRIBE_FAIL",
+            details: err,
+          },
+        };
+      }
+      const subscribeData = await subscribeRes.json();
+
+      // ===================== 8. Guardar integración =====================
+      const ttlSeconds = 60 * 24 * 3600;
+      const expiryIso = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+      const webhookToken = uuidv4();
+      const integrationId = uuidv4();
+      const now = Date.now();
+
+      const integration: Integration = {
+        id: integrationId,
         agentId,
-        name: `WhatsApp - ${phone.verified_name || phone.display_phone_number}`,
-        phoneNumberId: phone.id,
-        businessAccountId,
-        accessToken,
-        webhookVerifyToken,
-        phoneNumber: phone.display_phone_number,
-        displayName: phone.verified_name,
-        tokenExpiry: tokenExpiry ? tokenExpiry.toISOString() : null,
-        qualityRating: phone.quality_rating,
-        verificationStatus: phone.code_verification_status,
+        name: phoneData.display_phone_number,
+        description: `Integración con número de teléfono ${phoneData.display_phone_number}`,
+        type: IntegrationType.MESSAGING,
+        provider: "whatsapp",
+        config: JSON.stringify({
+          phoneNumberId,
+          businessAccountId: businessId,
+          accessToken,
+          webhookVerifyToken: webhookToken,
+          phoneNumber: phoneData.display_phone_number,
+          expiresAt: expiryIso,
+        }),
+        credentials: accessToken,
+        status: IntegrationStatus.CONFIGURED,
+        createdBy: userId,
+        createdAt: now,
+        isActive: true,
       };
 
-      return await this.setupIntegration(integrationData, userId);
-    } catch (error) {
-      this.logger.error("Error en handleEmbeddedSignupCode:", error);
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      // Guardar en Table Storage
+      const tableClient = this.storageService.getTableClient(
+        STORAGE_TABLES.INTEGRATIONS
+      );
+      await tableClient.createEntity({
+        partitionKey: agentId,
+        rowKey: integrationId,
+        ...integration,
+      });
+
+      return {
+        status: 201,
+        jsonBody: {
+          integrationId,
+          name: integration.name,
+          expiresAt: expiryIso,
+          message: "Integración de WhatsApp creada correctamente",
+        },
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       return {
         status: 500,
-        jsonBody: { error: `Error inesperado: ${errorMessage}` },
+        jsonBody: {
+          error: "Error interno del servidor",
+          code: "UNEXPECTED_ERROR",
+          details: msg,
+        },
       };
     }
   }

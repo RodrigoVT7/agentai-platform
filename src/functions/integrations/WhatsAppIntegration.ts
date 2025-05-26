@@ -33,7 +33,7 @@ export async function WhatsAppIntegration(
       (request.url.includes("/embedded-signup") ||
         request.params.action === "embedded-signup")
     ) {
-      return handleWhatsAppEmbeddedSignup(request, context, logger);
+      return handleWhatsAppEmbeddedSignup(request, logger);
     }
 
     // Para otras operaciones, verificar autenticación
@@ -293,7 +293,6 @@ async function handleWhatsAppWebhookMessage(
  */
 async function handleWhatsAppEmbeddedSignup(
   request: HttpRequest,
-  context: InvocationContext,
   logger: Logger
 ): Promise<HttpResponseInit> {
   try {
@@ -330,6 +329,28 @@ async function handleWhatsAppEmbeddedSignup(
 
     // Obtener datos del cuerpo de la solicitud
     const signupData = await request.json();
+    console.log("signupData", signupData);
+
+    // Verificar que contenga todos los campos requeridos
+    const { agentId, esIntegrationCode, phoneNumberId, waba_id, business_id } =
+      signupData as any;
+
+    if (
+      !esIntegrationCode ||
+      !phoneNumberId ||
+      !waba_id ||
+      !business_id ||
+      !agentId
+    ) {
+      return {
+        status: 400,
+        jsonBody: {
+          error: "Datos incompletos",
+          details:
+            "Se requieren esIntegrationCode, phoneNumberId, waba_id y business_id",
+        },
+      };
+    }
 
     // Crear handler y validator
     const handler = new WhatsAppIntegrationHandler(logger);
