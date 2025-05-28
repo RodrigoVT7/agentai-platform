@@ -10,6 +10,7 @@ import { WhatsAppIntegrationValidator } from "../../shared/validators/integratio
 import { createLogger, Logger } from "../../shared/utils/logger";
 import { toAppError } from "../../shared/utils/error.utils";
 import { JwtService } from "../../shared/utils/jwt.service";
+import { HandleWhatsAppEmbeddedSignupInput } from "../../shared/models/meta.model";
 
 export async function WhatsAppIntegration(
   request: HttpRequest,
@@ -296,7 +297,6 @@ async function handleWhatsAppEmbeddedSignup(
   logger: Logger
 ): Promise<HttpResponseInit> {
   try {
-    // Verificar autenticación
     const authHeader = request.headers.get("authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return {
@@ -305,41 +305,37 @@ async function handleWhatsAppEmbeddedSignup(
       };
     }
 
-    // Extraer y verificar token
     const token = authHeader.split(" ")[1];
     const jwtService = new JwtService();
+    let payload: any;
 
-    let payload;
     try {
       payload = jwtService.verifyToken(token);
-    } catch (error) {
-      return {
-        status: 401,
-        jsonBody: { error: "Token inválido o expirado" },
-      };
+    } catch {
+      return { status: 401, jsonBody: { error: "Invalid or expired token" } };
     }
 
-    const userId = payload.userId;
+    const userId = payload?.userId;
     if (!userId) {
-      return {
-        status: 401,
-        jsonBody: { error: "Token no contiene userId" },
-      };
+      return { status: 401, jsonBody: { error: "Token missing userId" } };
     }
 
-    // Obtener datos del cuerpo de la solicitud
     const signupData = await request.json();
     console.log("signupData", signupData);
 
-    // Verificar que contenga todos los campos requeridos
-    const { agentId, esIntegrationCode, phoneNumberId, waba_id, business_id } =
-      signupData as any;
+    const {
+      agentId,
+      esIntegrationCode,
+      phoneNumberId,
+      whatsAppBusinessAccountId,
+      businessId,
+    } = signupData as HandleWhatsAppEmbeddedSignupInput;
 
     if (
       !esIntegrationCode ||
       !phoneNumberId ||
-      !waba_id ||
-      !business_id ||
+      !whatsAppBusinessAccountId ||
+      !businessId ||
       !agentId
     ) {
       return {
@@ -347,33 +343,33 @@ async function handleWhatsAppEmbeddedSignup(
         jsonBody: {
           error: "Datos incompletos",
           details:
-            "Se requieren esIntegrationCode, phoneNumberId, waba_id y business_id",
+            "Se requieren esIntegrationCode, phoneNumberId, whatsAppBusinessAccountId y businessId",
         },
       };
     }
 
-    // Crear handler y validator
     const handler = new WhatsAppIntegrationHandler(logger);
     const validator = new WhatsAppIntegrationValidator(logger);
 
-    // Validar datos de código
-    const codeValidation = await validator.validateEmbeddedSignupCode(
-      signupData,
+    const ESValidation = await validator.validateEmbeddedSignupData(
+      signupData as HandleWhatsAppEmbeddedSignupInput,
       userId
     );
 
-    if (!codeValidation.isValid) {
+    if (!ESValidation.isValid) {
       return {
         status: 400,
         jsonBody: {
           error: "Datos inválidos",
-          details: codeValidation.errors,
+          details: ESValidation.errors,
         },
       };
     }
 
-    // Procesar el código y configurar la integración
-    return await handler.handleEmbeddedSignupCode(signupData, userId);
+    return await handler.handleEmbeddedSignupCode(
+      signupData as HandleWhatsAppEmbeddedSignupInput,
+      userId
+    );
   } catch (error) {
     logger.error("Error al procesar código de Embedded Signup:", error);
 

@@ -1,20 +1,3 @@
-// src/shared/models/meta.model.ts
-
-// Respuesta al intercambiar el código de autorización por un token de acceso de corta duración
-export interface MetaShortLivedTokenResponse {
-  access_token: string;
-  token_type: string;
-  expires_in: number;
-}
-
-// Respuesta al intercambiar el token de corta duración por uno de larga duración
-export interface MetaLongLivedTokenResponse {
-  access_token: string;
-  token_type: string;
-  expires_in: number;
-}
-
-// Datos de la cuenta de negocios de WhatsApp
 export interface WhatsAppBusinessAccount {
   id: string;
   name: string;
@@ -22,7 +5,6 @@ export interface WhatsAppBusinessAccount {
   timezone_id?: string;
 }
 
-// Información del número de teléfono de WhatsApp Business
 export interface WhatsAppPhoneNumber {
   id: string;
   display_phone_number: string;
@@ -31,7 +13,6 @@ export interface WhatsAppPhoneNumber {
   certificate?: string;
 }
 
-// Respuesta al obtener números de teléfono asociados a una cuenta de WhatsApp Business
 export interface WhatsAppPhoneNumbersResponse {
   data: WhatsAppPhoneNumber[];
   paging?: {
@@ -43,7 +24,6 @@ export interface WhatsAppPhoneNumbersResponse {
   };
 }
 
-// Respuesta al obtener cuentas de WhatsApp Business asociadas a una cuenta de Meta
 export interface WhatsAppBusinessAccountsResponse {
   data: WhatsAppBusinessAccount[];
   paging?: {
@@ -52,5 +32,22 @@ export interface WhatsAppBusinessAccountsResponse {
       after: string;
     };
     next?: string;
+  };
+}
+
+export interface HandleWhatsAppEmbeddedSignupInput {
+  agentId: string;
+  esIntegrationCode: string;
+  phoneNumberId: string;
+  whatsAppBusinessAccountId: string;
+  businessId: string;
+}
+
+export interface WhatsAppBusinessAccountResponse {
+  id: string;
+  name: string;
+  owner_business_info: {
+    name: string;
+    id: string;
   };
 }

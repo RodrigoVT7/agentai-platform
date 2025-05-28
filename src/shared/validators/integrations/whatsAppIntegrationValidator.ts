@@ -3,6 +3,7 @@ import { ValidationResult } from "../../models/validation.model";
 import { StorageService } from "../../services/storage.service";
 import { STORAGE_TABLES } from "../../constants";
 import { Logger, createLogger } from "../../utils/logger";
+import { HandleWhatsAppEmbeddedSignupInput } from "../../models/meta.model";
 
 export class WhatsAppIntegrationValidator {
   private storageService: StorageService;
@@ -13,26 +14,54 @@ export class WhatsAppIntegrationValidator {
     this.logger = logger || createLogger();
   }
 
-  async validateEmbeddedSignupCode(
-    data: any,
+  async validateEmbeddedSignupData(
+    data: HandleWhatsAppEmbeddedSignupInput,
     userId: string
   ): Promise<ValidationResult> {
     const errors: string[] = [];
 
-    // Validar campos requeridos
     if (!data.esIntegrationCode) {
-      errors.push("Código de autorización es requerido");
+      errors.push("Authorization code is required");
     }
 
     if (!data.agentId) {
-      errors.push("ID del agente es requerido");
+      errors.push("Agent ID is required");
     }
 
-    // Verificar acceso al agente si no hay errores
+    if (!data.phoneNumberId) {
+      errors.push("Phone number ID is required");
+    }
+
+    if (!data.whatsAppBusinessAccountId) {
+      errors.push("WhatsApp Business Account ID is required");
+    }
+
+    if (!data.businessId) {
+      errors.push("Business ID is required");
+    }
+
+    const appId = process.env.META_APP_ID;
+    const appSecret = process.env.META_APP_SECRET;
+    const redirectUri = process.env.META_WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI;
+
+    if (!appId) {
+      errors.push("META_APP_ID environment variable is required");
+    }
+
+    if (!appSecret) {
+      errors.push("META_APP_SECRET environment variable is required");
+    }
+
+    if (!redirectUri) {
+      errors.push(
+        "META_WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI environment variable is required"
+      );
+    }
+
     if (errors.length === 0 && data.agentId) {
       const hasAccess = await this.verifyAgentAccess(data.agentId, userId);
       if (!hasAccess) {
-        errors.push("No tienes permiso para configurar este agente");
+        errors.push("You don't have permission to configure this agent");
       }
     }
 

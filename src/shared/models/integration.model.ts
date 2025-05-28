@@ -87,12 +87,8 @@ export interface IntegrationWhatsAppConfig {
   accessToken: string;
   webhookVerifyToken: string;
   phoneNumber: string;
-  displayName: string;
+  displayName?: string;
   messagingLimit?: number;
-  templates?: any[];
-  tokenExpiry?: string; // Fecha de expiración del token en formato ISO
-  qualityRating?: string; // Calificación de calidad del número
-  verificationStatus?: string; // Estado de verificación del número
 }
 export interface IntegrationGoogleCalendarConfig {
   /* ... */ accessToken: string;

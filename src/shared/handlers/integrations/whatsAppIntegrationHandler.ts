@@ -3,7 +3,6 @@ import { v4 as uuidv4 } from "uuid";
 import { StorageService } from "../../services/storage.service";
 import { STORAGE_TABLES, STORAGE_QUEUES } from "../../constants";
 import { Logger, createLogger } from "../../utils/logger";
-import { createAppError } from "../../utils/error.utils";
 import {
   Integration,
   IntegrationType,
@@ -19,6 +18,10 @@ import {
 } from "../../models/conversation.model"; // Asegúrate que estén importados
 import { MessageReceiverHandler } from "../conversation/messageReceiverHandler"; // Importar el handler
 import { TableClient } from "@azure/data-tables"; // Importar TableClient
+import {
+  HandleWhatsAppEmbeddedSignupInput,
+  WhatsAppBusinessAccountResponse,
+} from "../../models/meta.model";
 
 // Tipo genérico para Context y AzureFunction
 type Context = {
@@ -28,15 +31,6 @@ type Context = {
     warn: (message: string) => void;
   };
 };
-
-type AzureFunction = (context: Context, myTimer: any) => Promise<void>;
-
-// Interfaz para WhatsAppIntegration
-interface WhatsAppIntegration extends Integration {
-  accessToken: string;
-  tokenExpiry?: string;
-  rowKey: string;
-}
 
 export class WhatsAppIntegrationHandler {
   private storageService: StorageService;
@@ -353,33 +347,30 @@ export class WhatsAppIntegrationHandler {
 
   public async sendMessage(
     messageData: {
-      // Tipo más específico para los datos del mensaje
       integrationId: string;
-      to: string; // Número del destinatario
-      type: "text" | "template" | "image" | "document" | "interactive"; // Tipos soportados
-      // Contenido varía según el tipo
+      to: string;
+      type: "text" | "template" | "image" | "document" | "interactive";
       text?: { body: string; preview_url?: boolean };
       template?: {
         name: string;
         language: { code: string };
         components?: any[];
       };
-      image?: { id?: string; link?: string; caption?: string }; // ID si ya está subida, link si es URL
+      image?: { id?: string; link?: string; caption?: string };
       document?: {
         id?: string;
         link?: string;
         caption?: string;
         filename?: string;
       };
-      interactive?: any; // Objeto complejo para botones/listas
-      internalMessageId?: string; // ID de nuestro sistema para logging/status
+      interactive?: any;
+      internalMessageId?: string;
     },
-    userId: string // ID del usuario de nuestra plataforma (para verificación de permisos)
+    userId: string
   ): Promise<HttpResponseInit> {
     try {
       const { integrationId, to, type, internalMessageId } = messageData;
 
-      // 1. Verificar Integración y Permisos (como antes)
       const integration = await this.fetchIntegration(integrationId);
       if (!integration) {
         return {
@@ -397,70 +388,11 @@ export class WhatsAppIntegrationHandler {
         };
       }
 
-      // 2. Obtener Configuración
       const config = JSON.parse(
         integration.config as string
       ) as IntegrationWhatsAppConfig;
 
-      // Verificar y renovar token si es necesario
-      let accessToken: string;
-      try {
-        const whatsAppIntegration: WhatsAppIntegration = {
-          ...integration,
-          accessToken: config.accessToken,
-          tokenExpiry: config.tokenExpiry,
-          rowKey: integrationId,
-        };
-
-        // Intentar renovar el token
-        accessToken = await this.validateAndRefreshTokenIfNeeded(
-          whatsAppIntegration
-        );
-
-        // Actualizar el token en config si cambió
-        if (accessToken !== config.accessToken) {
-          config.accessToken = accessToken;
-          // También actualizar el token en el objeto de integración para futuros usos
-          await this.tableClient.updateEntity(
-            {
-              partitionKey: integration.agentId,
-              rowKey: integrationId,
-              config: JSON.stringify(config),
-            },
-            "Merge"
-          );
-        }
-      } catch (error) {
-        // Verificar si el token actual todavía es válido antes de fallar
-        const currentToken = config.accessToken;
-        const tokenExpiry = config.tokenExpiry
-          ? new Date(config.tokenExpiry)
-          : null;
-        const now = new Date();
-
-        if (currentToken && tokenExpiry && tokenExpiry > now) {
-          // El token actual todavía es válido, usar este token a pesar del error de renovación
-          this.logger.warn(
-            `Error al renovar token, pero el token actual aún es válido hasta ${tokenExpiry.toISOString()}. Se usará el token existente.`
-          );
-          accessToken = currentToken;
-        } else {
-          // El token actual no es válido o no hay información de expiración
-          this.logger.error(
-            `Error al validar/renovar token para envío de mensaje: ${error}`
-          );
-          return {
-            status: 401,
-            jsonBody: {
-              error: "Error de autenticación con WhatsApp",
-              details:
-                error instanceof Error
-                  ? error.message
-                  : "Token expirado o inválido",
-            },
-          };
-        }
-      }
+      const accessToken = config.accessToken;
 
       // 3. Construir Payload para la API de WhatsApp
       const payload: any = {
@@ -1204,206 +1136,71 @@ export class WhatsAppIntegrationHandler {
   }
 
   async handleEmbeddedSignupCode(
-    requestBody: any,
+    requestBody: HandleWhatsAppEmbeddedSignupInput,
     userId: string
   ): Promise<HttpResponseInit> {
     try {
-      // ===================== 1. Validación de entrada =====================
-      if (!requestBody || typeof requestBody !== "object") {
-        return {
-          status: 400,
-          jsonBody: {
-            error: "Payload inválido",
-            code: "INVALID_PAYLOAD",
-          },
-        };
-      }
-
       const {
         agentId,
         esIntegrationCode,
         phoneNumberId,
-        waba_id: wabaId,
-        business_id: businessId,
+        whatsAppBusinessAccountId,
+        businessId,
       } = requestBody;
 
-      const required = {
-        agentId,
+      const appId = process.env.META_APP_ID!;
+      const appSecret = process.env.META_APP_SECRET!;
+
+      const tokenResponse = await this.exchangeCodeForToken(
         esIntegrationCode,
-        phoneNumberId,
-        wabaId,
-        businessId,
-      };
-      const missing = Object.entries(required)
-        .filter(([_, v]) => !v)
-        .map(([k]) => k);
-      if (missing.length) {
-        return {
-          status: 400,
-          jsonBody: {
-            error: `Faltan campos obligatorios: ${missing.join(", ")}`,
-            code: "MISSING_FIELDS",
-            missing,
-          },
-        };
+        appId,
+        appSecret
+      );
+      if (!tokenResponse) {
+        this.logger.error("Failed to exchange code for access token");
+        return this.buildErrorResponse(
+          400,
+          "Code exchange failed",
+          "AUTH_CODE_EXCHANGE_FAIL"
+        );
       }
 
-      // ===================== 2. Verificación de permisos =====================
-      if (!(await this.verifyAccess(agentId, userId))) {
-        return {
-          status: 403,
-          jsonBody: {
-            error: "Sin permiso para modificar este agente",
-            code: "ACCESS_DENIED",
-          },
-        };
-      }
+      const accessToken = tokenResponse.access_token;
 
-      // ===================== 3. Configuración de entorno =====================
-      const appId = process.env.META_APP_ID;
-      const appSecret = process.env.META_APP_SECRET;
-      const redirectUri =
-        process.env.META_WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI;
-      if (!appId || !appSecret || !redirectUri) {
-        return {
-          status: 500,
-          jsonBody: {
-            error: "Error de configuración en el servidor",
-            code: "CONFIG_ERROR",
-          },
-        };
-      }
-
-      // ===================== 4. Obtener token de corta duración =====================
-      const exchangeUrl = new URL(
-        "https://graph.facebook.com/v22.0/oauth/access_token"
+      const phoneData = await this.getPhoneNumberData(
+        whatsAppBusinessAccountId,
+        accessToken,
+        phoneNumberId
       );
-      exchangeUrl.searchParams.append("client_id", appId);
-      exchangeUrl.searchParams.append("client_secret", appSecret);
-      exchangeUrl.searchParams.append("code", esIntegrationCode);
-
-      const shortRes = await fetch(exchangeUrl.toString(), {
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-      });
-
-      if (!shortRes.ok) {
-        const err = await shortRes.text();
-        return {
-          status: 400,
-          jsonBody: {
-            error: "Fallo intercambio de code",
-            code: "AUTH_CODE_EXCHANGE_FAIL",
-            details: err,
-          },
-        };
-      }
-      const shortToken = await shortRes.json();
-
-      // ===================== 5. Convertir a token de larga duración =====================
-      const longTokenUrl = new URL(
-        "https://graph.facebook.com/v22.0/oauth/access_token"
-      );
-      longTokenUrl.searchParams.set("grant_type", "fb_exchange_token");
-      longTokenUrl.searchParams.set("client_id", appId);
-      longTokenUrl.searchParams.set("client_secret", appSecret);
-      longTokenUrl.searchParams.set(
-        "fb_exchange_token",
-        shortToken.access_token
-      );
-
-      const longRes = await fetch(longTokenUrl.toString(), { method: "GET" });
-      if (!longRes.ok) {
-        const err = await longRes.text();
-        return {
-          status: 400,
-          jsonBody: {
-            error: "Fallo obtención de token largo",
-            code: "LONG_TOKEN_EXCHANGE_FAIL",
-            details: err,
-          },
-        };
-      }
-      const longTokenResponse = await longRes.json();
-      const longToken = {
-        access_token: longTokenResponse.access_token,
-        token_type: longTokenResponse.token_type || "bearer",
-      };
-      const accessToken = longToken.access_token;
-
-      // ===================== 6. Obtener datos del número de teléfono =====================
-      const phoneUrl = new URL(
-        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`
-      );
-      phoneUrl.searchParams.set(
-        "fields",
-        "id,cc,country_dial_code,display_phone_number,verified_name,status,quality_rating,search_visibility,platform_type,code_verification_status"
-      );
-      phoneUrl.searchParams.set("access_token", accessToken);
-      const phoneRes = await fetch(phoneUrl.toString(), {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
-
-      if (!phoneRes.ok) {
-        const err = await phoneRes.text();
-        return {
-          status: 400,
-          jsonBody: {
-            error: "No se pudo recuperar los datos de los números de teléfono",
-            code: "PHONE_FETCH_FAIL",
-            details: err,
-          },
-        };
-      }
-
-      const phoneResponse = await phoneRes.json();
-      const phoneData = phoneResponse.data.find(
-        (phone: any) => phone.id === phoneNumberId
-      );
-
       if (!phoneData) {
-        return {
-          status: 400,
-          jsonBody: {
-            error:
-              "El número de teléfono especificado no se encontró en la cuenta",
-            code: "PHONE_NOT_FOUND",
-          },
-        };
+        this.logger.error(
+          `Phone number ${phoneNumberId} not found in account ${whatsAppBusinessAccountId}`
+        );
+        return this.buildErrorResponse(
+          400,
+          "Phone number not found in account",
+          "PHONE_NOT_FOUND"
+        );
       }
 
-      // ===================== 7. Suscribir la aplicación =====================
-      const subscribeUrl = new URL(
-        `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`
+      const wabaData = await this.getWhatsAppBusinessAccountData(
+        whatsAppBusinessAccountId,
+        accessToken
       );
-      const subscribeRes = await fetch(subscribeUrl.toString(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
 
-      if (!subscribeRes.ok) {
-        const err = await subscribeRes.text();
-        return {
-          status: 400,
-          jsonBody: {
-            error: "No se pudo suscribir la aplicación al número de teléfono",
-            code: "APP_SUBSCRIBE_FAIL",
-            details: err,
-          },
-        };
+      const subscribed = await this.subscribeAppToWABA(
+        whatsAppBusinessAccountId,
+        accessToken
+      );
+      if (!subscribed) {
+        this.logger.error("Failed to subscribe application to WABA");
+        return this.buildErrorResponse(
+          400,
+          "Failed to subscribe application to phone number",
+          "APP_SUBSCRIBE_FAIL"
+        );
       }
-      const subscribeData = await subscribeRes.json();
 
-      // ===================== 8. Guardar integración =====================
-      const ttlSeconds = 60 * 24 * 3600;
-      const expiryIso = new Date(Date.now() + ttlSeconds * 1000).toISOString();
       const webhookToken = uuidv4();
       const integrationId = uuidv4();
       const now = Date.now();
@@ -1411,8 +1208,8 @@ export class WhatsAppIntegrationHandler {
       const integration: Integration = {
         id: integrationId,
         agentId,
-        name: phoneData.display_phone_number,
-        description: `Integración con número de teléfono ${phoneData.display_phone_number}`,
+        name: wabaData?.name || phoneData.display_phone_number,
+        description: `WhatsApp integration for agent ${agentId} with phone number ${phoneData.display_phone_number} and WhatsApp Business Account ${whatsAppBusinessAccountId}`,
         type: IntegrationType.MESSAGING,
         provider: "whatsapp",
         config: JSON.stringify({
@@ -1421,7 +1218,6 @@ export class WhatsAppIntegrationHandler {
           accessToken,
           webhookVerifyToken: webhookToken,
           phoneNumber: phoneData.display_phone_number,
-          expiresAt: expiryIso,
         }),
         credentials: accessToken,
         status: IntegrationStatus.CONFIGURED,
@@ -1430,31 +1226,28 @@ export class WhatsAppIntegrationHandler {
         isActive: true,
       };
 
-      // Guardar en Table Storage
-      const tableClient = this.storageService.getTableClient(
-        STORAGE_TABLES.INTEGRATIONS
-      );
-      await tableClient.createEntity({
+      await this.tableClient.createEntity({
         partitionKey: agentId,
         rowKey: integrationId,
         ...integration,
       });
 
-      return {
+      const response = {
         status: 201,
         jsonBody: {
           integrationId,
           name: integration.name,
-          expiresAt: expiryIso,
-          message: "Integración de WhatsApp creada correctamente",
+          message: "WhatsApp integration created successfully",
         },
       };
+      return response;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Error in handleEmbeddedSignupCode: ${msg}`, err);
       return {
         status: 500,
         jsonBody: {
-          error: "Error interno del servidor",
+          error: "Internal server error",
           code: "UNEXPECTED_ERROR",
           details: msg,
         },
@@ -1462,182 +1255,121 @@ export class WhatsAppIntegrationHandler {
     }
   }
 
-  /**
-   * Renueva un token específico para una integración
-   */
-  async refreshToken(integration: WhatsAppIntegration): Promise<string | null> {
-    try {
-      const appId = process.env.META_APP_ID;
-      const appSecret = process.env.META_APP_SECRET;
+  private async exchangeCodeForToken(
+    code: string,
+    appId: string,
+    appSecret: string
+  ): Promise<{ access_token: string } | null> {
+    const url = new URL("https://graph.facebook.com/v22.0/oauth/access_token");
+    url.searchParams.append("client_id", appId);
+    url.searchParams.append("client_secret", appSecret);
+    url.searchParams.append("code", code);
 
-      if (!appId || !appSecret) {
-        this.logger.error(
-          "Faltan variables de entorno para la renovación del token"
-        );
-        return null;
-      }
+    const response = await fetch(url.toString(), { method: "GET" });
+    const responseData = await response.json();
 
-      // Construir URL para renovar el token
-      const refreshUrl = new URL(
-        "https://graph.facebook.com/v22.0/oauth/access_token"
-      );
-      refreshUrl.searchParams.append("grant_type", "fb_exchange_token");
-      refreshUrl.searchParams.append("client_id", appId);
-      refreshUrl.searchParams.append("client_secret", appSecret);
-      refreshUrl.searchParams.append(
-        "fb_exchange_token",
-        integration.accessToken
-      );
-
-      // Solicitar nuevo token
-      const response = await fetch(refreshUrl.toString(), { method: "GET" });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        this.logger.error(
-          `Error al renovar token para agente ${integration.agentId}: ${errorText}`
-        );
-        return null;
-      }
-
-      const tokenData = await response.json();
-
-      if (!tokenData.access_token) {
-        this.logger.error(
-          `Respuesta de token inválida para agente ${integration.agentId}`
-        );
-        return null;
-      }
-
-      // Calcular nueva fecha de expiración
-      const expiresIn = tokenData.expires_in || 5184000; // Por defecto 60 días en segundos
-      const newExpiry = new Date(Date.now() + expiresIn * 1000);
-
-      // Actualizar en base de datos
-      await this.tableClient.updateEntity(
-        {
-          partitionKey: integration.agentId,
-          rowKey: integration.rowKey,
-          accessToken: tokenData.access_token,
-          tokenExpiry: newExpiry.toISOString(),
-          config: integration.config,
-        },
-        "Merge"
-      );
-
-      this.logger.info(
-        `Token renovado exitosamente para agente ${
-          integration.agentId
-        }, expira: ${newExpiry.toISOString()}`
-      );
-      return tokenData.access_token;
-    } catch (error) {
+    if (!response.ok) {
       this.logger.error(
-        `Error inesperado al renovar token para agente ${integration.agentId}:`,
-        error
+        `Error in exchangeCodeForToken. Status: ${response.status}`
       );
       return null;
     }
+
+    return responseData;
   }
 
-  /**
-   * Verifica si un token necesita ser renovado (menos de 7 días para expirar)
-   */
-  needsRefresh(integration: WhatsAppIntegration): boolean {
-    if (!integration.tokenExpiry) return true;
-
-    const expiryDate = new Date(integration.tokenExpiry);
-    const sevenDaysFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 días en milisegundos
-
-    return expiryDate <= sevenDaysFromNow;
-  }
-
-  /**
-   * Método para validar y renovar tokens al momento de usarlos
-   */
-  async validateAndRefreshTokenIfNeeded(
-    integration: WhatsAppIntegration
-  ): Promise<string> {
-    try {
-      // Si no hay token o fecha de expiración, lanzar error
-      if (!integration.accessToken || !integration.tokenExpiry) {
-        throw new Error("Token de acceso inválido o sin fecha de expiración");
-      }
-
-      const expiryDate = new Date(integration.tokenExpiry);
-      const now = new Date();
-
-      // Si ya expiró, error inmediato
-      if (expiryDate <= now) {
-        throw new Error("El token de acceso ha expirado");
-      }
-
-      // Si expira en menos de 7 días, renovar proactivamente
-      const sevenDaysFromNow = new Date(
-        now.getTime() + 7 * 24 * 60 * 60 * 1000
-      );
-      if (expiryDate <= sevenDaysFromNow) {
-        this.logger.info(
-          `Renovando proactivamente token para integración ${integration.rowKey}`
-        );
-
-        const newToken = await this.refreshToken(integration);
-
-        if (newToken) {
-          return newToken;
-        }
-      }
-
-      // Devolver token actual si todo está correcto
-      return integration.accessToken;
-    } catch (error) {
-      this.logger.error("Error validando token:", error);
-      throw error;
-    }
-  }
-}
-
-/**
- * Función Azure Timer Trigger para renovar tokens programados para expirar pronto
- */
-export const tokenRefreshTimerTrigger: AzureFunction = async function (
-  context: Context,
-  myTimer: any
-): Promise<void> {
-  const logger = createLogger();
-  const whatsAppHandler = new WhatsAppIntegrationHandler(logger);
-  let entitiesProcessed = 0;
-  let tokensRenewed = 0;
-
-  try {
-    // Obtener todas las integraciones de WhatsApp
-    const tableClient = whatsAppHandler.tableService.getTableClient(
-      STORAGE_TABLES.INTEGRATIONS
+  private async getPhoneNumberData(
+    wabaId: string,
+    accessToken: string,
+    phoneNumberId: string
+  ): Promise<{ id: string; display_phone_number: string } | null> {
+    const url = new URL(
+      `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`
     );
-    const integrations = tableClient.listEntities<WhatsAppIntegration>({
-      queryOptions: {
-        filter: `provider eq 'whatsapp' and isActive eq true`,
-      },
+    url.searchParams.set("fields", "id,display_phone_number");
+    url.searchParams.set("access_token", accessToken);
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
 
-    for await (const integration of integrations) {
-      entitiesProcessed++;
+    const responseData = await response.json();
 
-      // Verificar si necesita renovación
-      if (whatsAppHandler.needsRefresh(integration)) {
-        logger.info(`Renovando token para agente: ${integration.agentId}`);
-        const newToken = await whatsAppHandler.refreshToken(integration);
-
-        if (newToken) {
-          tokensRenewed++;
-        }
-      }
+    if (!response.ok) {
+      this.logger.error(
+        `Error in getPhoneNumberData. Status: ${response.status}`
+      );
+      return null;
     }
 
-    logger.info(
-      `Proceso completado. Entidades procesadas: ${entitiesProcessed}, Tokens renovados: ${tokensRenewed}`
-    );
-  } catch (error) {
-    logger.error("Error en el proceso de renovación de tokens:", error);
+    const phoneData =
+      responseData.data.find((phone: any) => phone.id === phoneNumberId) ||
+      null;
+
+    return phoneData;
   }
-};
+
+  private async getWhatsAppBusinessAccountData(
+    wabaId: string,
+    accessToken: string
+  ): Promise<WhatsAppBusinessAccountResponse | null> {
+    const url = new URL(`https://graph.facebook.com/v22.0/${wabaId}`);
+    url.searchParams.set("fields", "id,name,currency,owner_business_info");
+    url.searchParams.set("access_token", accessToken);
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    const responseData = await response.json();
+
+    if (!response.ok) {
+      this.logger.error(`Error in getWabaInfo. Status: ${response.status}`);
+      return null;
+    }
+
+    return responseData as WhatsAppBusinessAccountResponse;
+  }
+
+  private async subscribeAppToWABA(
+    wabaId: string,
+    accessToken: string
+  ): Promise<boolean> {
+    const url = new URL(
+      `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`
+    );
+
+    const response = await fetch(url.toString(), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    const responseData = await response.json();
+
+    if (!response.ok) {
+      this.logger.error(
+        `Error in subscribeAppToWABA. Status: ${response.status}`
+      );
+    }
+
+    return response.ok;
+  }
+
+  private buildErrorResponse(
+    status: number,
+    error: string,
+    code: string,
+    details?: string
+  ): HttpResponseInit {
+    return {
+      status,
+      jsonBody: {
+        error,
+        code,
+        ...(details && { details }),
+      },
+    };
+  }
+}
