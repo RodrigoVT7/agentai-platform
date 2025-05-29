@@ -9,6 +9,8 @@ import { EmbeddingQueueMessage } from "../../models/documentProcessor.model";
 import { EmbeddingResult, Vector } from "../../models/embedding.model";
 import { AzureAiSearchService } from "../../services/azureAiSearch.service";
 import { SearchClient } from "@azure/search-documents";
+import { ChunkStructure } from "../../models/document-analysis.model";
+import { TextAnalysisUtils } from "../../utils/text-analysis.utils";
 
 export class EmbeddingGeneratorHandler {
   private storageService: StorageService;
@@ -26,22 +28,39 @@ export class EmbeddingGeneratorHandler {
  /**
    * Procesa un mensaje de la cola y genera embeddings
    */
- public async execute(message: EmbeddingQueueMessage): Promise<EmbeddingResult> {
+
+public async execute(message: EmbeddingQueueMessage): Promise<EmbeddingResult> {
   const { chunkId, documentId, knowledgeBaseId, content, agentId } = message;
   
   try {
+    // Validación más flexible - permitir content vacío
+    if (!message || !message.chunkId || !message.documentId || !message.knowledgeBaseId) {
+      this.logger.error("Mensaje de cola inválido - faltan campos requeridos", { message });
+      return {
+        chunkId: message?.chunkId || 'unknown',
+        documentId: message?.documentId || 'unknown',
+        knowledgeBaseId: message?.knowledgeBaseId || 'unknown',
+        success: false,
+        error: 'Mensaje de cola inválido'
+      };
+    }
+    
     this.logger.info(`Generando embedding para chunk ${chunkId} del documento ${documentId}`);
     
+    // Si el contenido está vacío, usar un placeholder
+    const contentToEmbed = content && content.trim() ? content : '[Contenido vacío]';
+    
     // Generar embedding
-    const vector = await this.openaiService.getEmbedding(content);
+    const vector = await this.openaiService.getEmbedding(contentToEmbed);
     
     if (!vector || vector.length === 0) {
       throw createAppError(500, `Error al generar embedding para chunk ${chunkId}`);
     }
     
-    await this.indexVectorInAiSearch(chunkId, documentId, knowledgeBaseId, vector, content);
-
-    // Comprobar si todos los chunks tienen embedding y actualizar estado del documento
+    // Indexar en AI Search (guardar el content original, no el placeholder)
+    await this.indexVectorInAiSearch(chunkId, documentId, knowledgeBaseId, vector, content || '');
+    
+    // Comprobar si todos los chunks tienen embedding
     await this.checkDocumentCompletion(documentId, knowledgeBaseId, agentId);
     
     this.logger.info(`Embedding generado con éxito para chunk ${chunkId}`);
@@ -53,10 +72,9 @@ export class EmbeddingGeneratorHandler {
       success: true,
       vector
     };
-  } catch (error: unknown) {
+  } catch (error) {
     this.logger.error(`Error al generar embedding para chunk ${chunkId}:`, error);
     
-    // No actualizar documento a fallido si solo falla un chunk
     const errorMessage = error instanceof Error ? error.message : String(error);
     return {
       chunkId,
@@ -67,45 +85,6 @@ export class EmbeddingGeneratorHandler {
     };
   }
 }
-
-  /**
-     * Indexa un vector en Azure AI Search
-     */
-  private async indexVectorInAiSearch(
-    chunkId: string,
-    documentId: string,
-    knowledgeBaseId: string,
-    vector: number[],
-    content: string
-): Promise<void> {
-    try {
-        const adminClient = this.aiSearchService.getAdminClient();
-
-        const documentToUpload = {
-            chunkId: chunkId,
-            documentId: documentId,
-            knowledgeBaseId: knowledgeBaseId,
-            content: content,
-            vector: vector,
-            // Puedes añadir más metadatos aquí si los definiste en el índice
-        };
-
-        const result = await adminClient.mergeOrUploadDocuments([documentToUpload]);
-
-        // Verificar resultados (opcional pero recomendado)
-        if (result.results?.length > 0 && result.results[0].succeeded) {
-            this.logger.debug(`Chunk ${chunkId} indexado/actualizado en Azure AI Search.`);
-        } else {
-             const errorDetails = result.results?.length > 0 ? result.results[0].errorMessage : "Error desconocido";
-            throw new Error(`Fallo al indexar chunk ${chunkId}: ${errorDetails}`);
-        }
-
-    } catch (error) {
-        this.logger.error(`Error al indexar vector en Azure AI Search para chunk ${chunkId}:`, error);
-        throw error; // Relanzar para que se maneje en execute()
-    }
-}
-  
   
     /**
      * Comprueba si todos los chunks de un documento han sido indexados en AI Search
@@ -229,13 +208,16 @@ export class EmbeddingGeneratorHandler {
   
   
             // --- Comparar y actualizar estado si es necesario ---
-            if (currentIndexedCount >= totalChunksExpected) {
-                  // Solo actualiza si no está ya VECTORIZED (verificado al inicio)
-                  await this.updateDocumentStatus(documentId, knowledgeBaseId, DocumentProcessingStatus.VECTORIZED);
-                  this.logger.info(`Documento ${documentId} completamente vectorizado (${currentIndexedCount}/${totalChunksExpected}). Estado actualizado.`);
-            } else {
-                 this.logger.info(`Documento ${documentId} aún no está completamente vectorizado (${currentIndexedCount}/${totalChunksExpected}).`);
-            }
+             if (currentIndexedCount >= totalChunksExpected) {
+    await this.updateDocumentStatus(documentId, knowledgeBaseId, DocumentProcessingStatus.VECTORIZED);
+    this.logger.info(`Documento ${documentId} completamente vectorizado (${currentIndexedCount}/${totalChunksExpected}). Estado actualizado.`);
+  } else if (currentIndexedCount >= totalChunksExpected * 0.9) {
+    // Si tenemos al menos 90% de los chunks, considerarlo completo
+    this.logger.warn(`Documento ${documentId} tiene ${currentIndexedCount}/${totalChunksExpected} chunks (${Math.round(currentIndexedCount/totalChunksExpected*100)}%). Marcando como vectorizado.`);
+    await this.updateDocumentStatus(documentId, knowledgeBaseId, DocumentProcessingStatus.VECTORIZED);
+  } else {
+    this.logger.info(`Documento ${documentId} aún no está completamente vectorizado (${currentIndexedCount}/${totalChunksExpected}).`);
+  }
         } catch (error) {
             this.logger.error(`Error general en checkDocumentCompletion para ${documentId}:`, error);
             // No propagamos el error para no detener el proceso de otros chunks
@@ -302,5 +284,304 @@ export class EmbeddingGeneratorHandler {
     });
   }
 
+
+// Añadir estos métodos a la clase:
+
+private async enrichContentForEmbedding(
+  content: string, 
+  message: EmbeddingQueueMessage
+): Promise<string> {
+  let enriched = content;
+  
+  // Analizar la estructura del chunk
+  const structure = this.analyzeChunkStructure(content);
+  
+  // Añadir contexto basado en la estructura detectada
+  const contextPrefixes: string[] = [];
+  
+  if (structure.isStructured) {
+    contextPrefixes.push(`[Estructura: ${structure.type}]`);
+  }
+  
+  // **NUEVO: Marcar contenido crítico para comparaciones**
+  if (structure.isComparisonCritical) {
+    contextPrefixes.push('[DATOS COMPARABLES - CRÍTICO PARA RANKINGS/EXTREMOS]');
+  }
+  
+  if (structure.hasNumericValues) {
+    contextPrefixes.push('[Contiene valores numéricos]');
+    
+    // Si hay comparaciones posibles, indicarlo
+    if (structure.hasComparisons || this.detectComparativePotential(content)) {
+      contextPrefixes.push('[Datos comparables]');
+    }
+  }
+  
+  // Detectar el tipo de contenido sin hardcodear
+  const contentType = await this.inferDocumentType(content);
+  if (contentType && contentType !== 'general') {
+    contextPrefixes.push(`[Contenido: ${contentType}]`);
+  }
+  
+  // **NUEVO: Para datos críticos, añadir instrucciones específicas**
+  if (structure.isComparisonCritical) {
+    contextPrefixes.push('[INSTRUCCIÓN: Este chunk contiene datos que pueden ser comparados. Ideal para consultas de máximo/mínimo/mejor/peor]');
+  }
+  
+  // Construir el contenido enriquecido
+  if (contextPrefixes.length > 0) {
+    enriched = contextPrefixes.join(' ') + '\n\n' + content;
+  }
+  
+  return enriched;
+}
+
+private analyzeChunkStructure(content: string): ChunkStructure {
+  const lines = content.split('\n').filter(l => l.trim());
+  
+  const structure: ChunkStructure = {
+    isStructured: false,
+    type: 'text',
+    hasNumericValues: false,
+    hasComparisons: false,
+    columnCount: 0,
+    patternConsistency: 0,
+    isComparisonCritical: false // **NUEVO CAMPO**
+  };
+  
+  if (lines.length === 0) return structure;
+  
+  // Detectar valores numéricos
+  const numbers = TextAnalysisUtils.extractNumbers(content);
+  structure.hasNumericValues = numbers.length > 0;
+  
+  // **NUEVO: Detectar si es dato crítico para comparaciones**
+  structure.isComparisonCritical = this.isComparisonCriticalContent(content);
+  
+  // Detectar comparaciones
+  const comparisonPatterns = [
+    /(?:más|menos|mayor|menor|mejor|peor)/i,
+    /(?:máximo|mínimo|óptimo|ideal)/i,
+    /(?:comparar|versus|vs|entre)/i,
+    /(?:superior|inferior|igual)/i,
+    /(?:aumenta|disminuye|crece|reduce)/i
+  ];
+  
+  structure.hasComparisons = comparisonPatterns.some(pattern => pattern.test(content));
+  
+  // Analizar estructura de líneas
+  const lineFormats = lines.map(line => TextAnalysisUtils.getLineFormat(line));
+  
+  // Detectar si es estructurado
+  const separatorLines = lineFormats.filter(f => f.hasSeparator).length;
+  const avgColumns = lineFormats
+    .filter(f => f.hasSeparator)
+    .reduce((sum, f) => sum + f.columnCount, 0) / (separatorLines || 1);
+  
+  if (separatorLines > lines.length * 0.5) {
+    structure.isStructured = true;
+    structure.columnCount = Math.round(avgColumns);
+    structure.patternConsistency = separatorLines / lines.length;
+    
+    if (structure.columnCount > 1) {
+      structure.type = 'tabular';
+    } else if (this.detectKeyValuePattern(lines)) {
+      structure.type = 'key-value';
+    } else {
+      structure.type = 'structured-list';
+    }
+  } else if (this.detectListPattern(lines)) {
+    structure.isStructured = true;
+    structure.type = 'list';
+    structure.patternConsistency = 0.7;
+  }
+  
+  return structure;
+}
+
+// 4. MÉTODO AUXILIAR: Detectar contenido crítico para comparaciones
+private isComparisonCriticalContent(content: string): boolean {
+  // Reutilizar la lógica del método anterior pero adaptada para contenido de chunk
+  const contentLower = content.toLowerCase();
+  
+  const comparisonKeywords = [
+    'precio', 'price', 'cost', 'costo', '$', 'total', 'lista',
+    'unidad', 'producto', 'modelo', 'ranking', 'score', 'nivel',
+    'id', 'código', 'ref', 'm²', 'm2'
+  ];
+  
+  const matchCount = comparisonKeywords.filter(keyword => contentLower.includes(keyword)).length;
+  const numbers = TextAnalysisUtils.extractNumbers(content);
+  
+  return matchCount >= 2 && numbers.length >= 3;
+}
+
+
+
+private detectComparativePotential(content: string): boolean {
+  // Detectar si el contenido tiene potencial para comparaciones
+  const lines = content.split('\n');
+  const numbers = TextAnalysisUtils.extractNumbers(content);
+  
+  // Si hay múltiples números, probablemente se pueden comparar
+  if (numbers.length > 2) return true;
+  
+  // Si hay múltiples items con el mismo formato
+  const patterns: Map<string, number> = new Map();
+  
+  lines.forEach(line => {
+    const format = this.getLinePattern(line);
+    if (format) {
+      patterns.set(format, (patterns.get(format) || 0) + 1);
+    }
+  });
+  
+  // Si hay patrones repetidos, sugiere items comparables
+  return Array.from(patterns.values()).some(count => count > 2);
+}
+
+private getLinePattern(line: string): string | null {
+  // Detectar el patrón de una línea para identificar items similares
+  const trimmed = line.trim();
+  
+  if (!trimmed) return null;
+  
+  // Reemplazar números y valores específicos con marcadores
+  let pattern = trimmed
+    .replace(/\d+([.,]\d+)?/g, 'NUM')
+    .replace(/\$\s*NUM/g, '$NUM')
+    .replace(/NUM\s*%/g, 'NUM%')
+    .replace(/"[^"]+"/g, 'TEXT')
+    .replace(/'[^']+'/g, 'TEXT');
+  
+  // Si el patrón es muy genérico, no es útil
+  if (pattern === 'NUM' || pattern === 'TEXT') return null;
+  
+  return pattern;
+}
+
+private detectKeyValuePattern(lines: string[]): boolean {
+  const kvCount = lines.filter(line => TextAnalysisUtils.looksLikeKey(line)).length;
+  return kvCount > lines.length * 0.5;
+}
+
+private detectListPattern(lines: string[]): boolean {
+  const listPatterns = [
+    /^\s*\d+[\.\)]\s+/,
+    /^\s*[a-zA-Z][\.\)]\s+/,
+    /^\s*[-*•]\s+/
+  ];
+  
+  const listCount = lines.filter(line => 
+    listPatterns.some(pattern => pattern.test(line))
+  ).length;
+  
+  return listCount > lines.length * 0.4;
+}
+
+private async inferDocumentType(content: string): Promise<string> {
+  // Inferir tipo de documento basado en el contenido sin hardcodear
+  const contentLower = content.toLowerCase();
+  
+  // Buscar indicadores de tipo
+  const typeIndicators = {
+    financial: {
+      keywords: ['precio', 'costo', 'valor', 'total', 'subtotal', 'impuesto', 'descuento', '$', 'usd', 'mxn', 'eur'],
+      weight: 0
+    },
+    medical: {
+      keywords: ['paciente', 'diagnóstico', 'tratamiento', 'síntoma', 'medicamento', 'dosis', 'mg', 'ml', 'resultados'],
+      weight: 0
+    },
+    legal: {
+      keywords: ['artículo', 'sección', 'cláusula', 'contrato', 'ley', 'decreto', 'párrafo', 'inciso', 'fracción'],
+      weight: 0
+    },
+    technical: {
+      keywords: ['sistema', 'proceso', 'método', 'función', 'parámetro', 'configuración', 'algoritmo', 'datos'],
+      weight: 0
+    },
+    inventory: {
+      keywords: ['producto', 'stock', 'inventario', 'cantidad', 'unidades', 'disponible', 'agotado', 'existencias'],
+      weight: 0
+    },
+    temporal: {
+      keywords: ['fecha', 'hora', 'día', 'mes', 'año', 'calendario', 'horario', 'agenda', 'cita'],
+      weight: 0
+    }
+  };
+  
+  // Calcular pesos basados en frecuencia de keywords
+  Object.entries(typeIndicators).forEach(([type, config]) => {
+    config.keywords.forEach(keyword => {
+      if (contentLower.includes(keyword)) {
+        config.weight++;
+      }
+    });
+  });
+  
+  // Encontrar el tipo con mayor peso
+  let maxWeight = 0;
+  let detectedType = 'general';
+  
+  Object.entries(typeIndicators).forEach(([type, config]) => {
+    if (config.weight > maxWeight) {
+      maxWeight = config.weight;
+      detectedType = type;
+    }
+  });
+  
+  // Solo asignar tipo si hay suficiente confianza
+  return maxWeight > 2 ? detectedType : 'general';
+}
+
+private detectNumericData(content: string): boolean {
+  const numbers = TextAnalysisUtils.extractNumbers(content);
+  return numbers.length > 0;
+}
+
+// Modificar el método indexVectorInAiSearch para incluir metadata enriquecida
+private async indexVectorInAiSearch(
+  chunkId: string,
+  documentId: string,
+  knowledgeBaseId: string,
+  vector: number[],
+  content: string,
+  chunkOwnMetadata?: Record<string, any>
+): Promise<void> {
+  try {
+    const adminClient = this.aiSearchService.getAdminClient();
+    
+    // Preparar documento para indexar
+    const documentToUpload: Record<string, any> = {
+      chunkId: chunkId,
+      documentId: documentId,
+      knowledgeBaseId: knowledgeBaseId,
+      content: content,
+      vector: vector,
+      blockType: chunkOwnMetadata?.blockType,
+      isPriceTable: chunkOwnMetadata?.isPriceTable, // Ejemplo
+      isComparisonCritical: chunkOwnMetadata?.isComparisonCritical,
+    };
+    
+    for (const key in documentToUpload) {
+      if (documentToUpload[key] === undefined) {
+        delete documentToUpload[key];
+      }
+    }
+
+    const result = await adminClient.mergeOrUploadDocuments([documentToUpload]);
+    
+    if (result.results?.length > 0 && result.results[0].succeeded) {
+      this.logger.debug(`Chunk ${chunkId} indexado en Azure AI Search con metadata enriquecida`);
+    } else {
+      const errorDetails = result.results?.length > 0 ? result.results[0].errorMessage : "Error desconocido";
+      throw new Error(`Fallo al indexar chunk ${chunkId}: ${errorDetails}`);
+    }
+  } catch (error) {
+    this.logger.error(`Error al indexar vector en Azure AI Search para chunk ${chunkId}:`, error);
+    throw error;
+  }
+}
 
 }

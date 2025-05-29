@@ -13,7 +13,9 @@
   FEEDBACK: "feedback",
   INTEGRATION_CATALOG: "integrationcatalog",
   INTEGRATIONS: "integrations",
-  INTEGRATION_LOGS: "integrationlogs"
+  INTEGRATION_LOGS: "integrationlogs",
+  AGENT_STATUS: "agentstatus",
+  SYSTEM_NOTIFICATION_TEMPLATES: "systemnotificationtemplates",
 };
 
 export const STORAGE_QUEUES = {
@@ -50,7 +52,7 @@ export const EMBEDDING_CONFIG = {
 };
 
 export const AI_CONFIG = {
-  EMBEDDING_MODEL: "embeddings",
+  EMBEDDING_MODEL: "text-embedding-ada-002",
   CHAT_MODEL: "gpt-4o",
   TEMPERATURE: 0.7,
   MAX_TOKENS: 4000
@@ -61,4 +63,10 @@ export const AZURE_SEARCH_CONFIG = {
   ADMIN_KEY: process.env.AZURE_SEARCH_ADMIN_KEY || "",
   QUERY_KEY: process.env.AZURE_SEARCH_QUERY_KEY || "",
   INDEX_NAME: process.env.AZURE_SEARCH_INDEX_NAME || ""
+};
+
+export const GOOGLE_CALENDAR_CONFIG = {
+  DEFAULT_APPOINTMENT_DURATION_MINUTES: 60,
+  BOOKED_BY_USER_ID_KEY: 'bookedByUserId_agentai',
+  DEFAULT_MAX_CONCURRENT_APPOINTMENTS: 100
 };

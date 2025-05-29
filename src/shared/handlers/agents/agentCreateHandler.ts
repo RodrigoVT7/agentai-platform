@@ -2,7 +2,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { StorageService } from "../../services/storage.service";
 import { NotificationService } from "../../services/notification.service";
-import { Agent } from "../../models/agent.model";
+import { Agent, HandoffMethod, AgentHandoffConfig } from "../../models/agent.model";
 import { STORAGE_TABLES, STORAGE_QUEUES } from "../../constants";
 import { Logger, createLogger } from "../../utils/logger";
 import { createAppError } from "../../utils/error.utils";
@@ -20,8 +20,13 @@ export class AgentCreateHandler {
   
   async execute(agentData: any): Promise<any> {
     try {
-      const { userId, name, description, modelType, systemInstructions, temperature, handoffEnabled } = agentData;
-      
+       const {
+            userId, name, description, modelType, systemInstructions,
+            temperature, handoffEnabled,
+            handoffConfig, // Se espera un objeto AgentHandoffConfig
+            organizationName
+        } = agentData;
+
       // Generar código único para el agente (para URLs amigables y referencias)
       const code = this.generateAgentCode(name);
       
@@ -68,30 +73,34 @@ export class AgentCreateHandler {
         // Serializar operatingHours como string
         operatingHours: agentData.operatingHours ? 
           JSON.stringify(agentData.operatingHours) : null,
-        createdAt: now
-      };
+        createdAt: now,
+        organizationName: organizationName || 'Organización Desconocida', // Nuevo
+        handoffConfig: handoffConfig ? JSON.stringify(handoffConfig) : JSON.stringify({ type: HandoffMethod.PLATFORM, notificationTargets: [] })
+        };
       
       // Guardar en Table Storage
       await tableClient.createEntity({
         partitionKey: 'agent',
         rowKey: agentId,
-        ...newAgent
+        ...newAgent,
       });
       
       // Crear base de conocimiento por defecto
       const kbId = await this.createDefaultKnowledgeBase(agentId, userId);
       
       // Crear respuesta
-      const response = {
-        id: agentId,
-        code: code,
-        name: name,
-        description: description || '',
-        knowledgeBaseId: kbId,
-        createdAt: now,
-        message: "Agente creado con éxito"
-      };
-      
+       const response = {
+            id: agentId,
+            code: code,
+            name: name,
+            description: description || '',
+            knowledgeBaseId: kbId, // kbId debe estar definida
+            createdAt: now,
+            organizationName: newAgent.organizationName,
+            handoffConfig: handoffConfig || { type: HandoffMethod.PLATFORM, notificationTargets: [] },
+            message: "Agente creado con éxito"
+        };
+
       return response;
     } catch (error: unknown) {
       this.logger.error('Error al crear agente:', error);

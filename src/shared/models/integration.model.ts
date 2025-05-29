@@ -9,7 +9,8 @@ export enum IntegrationType {
   ERP = 'erp',
   PAYMENT = 'payment',
   TICKETING = 'ticketing',
-  CUSTOM = 'custom'
+  CUSTOM = 'custom',
+  SYSTEM_INTERNAL = 'system_internal'
 }
 
 export enum IntegrationStatus {
@@ -33,6 +34,8 @@ export interface CapabilityToolDefinition {
       format?: string;
       enum?: string[];
       items?: any;
+      properties?: Record<string, any>; // Para objetos anidados
+      required?: string[]; // Para propiedades requeridas en objetos anidados
     }>;
     required?: string[];
   };
@@ -53,13 +56,44 @@ export interface IntegrationCatalogItem {
 }
 
 export interface Integration {
-    id: string; agentId: string; name: string; description?: string; type: IntegrationType; provider: string; config: string | object; // Puede ser string u objeto parseado
-    credentials?: string; // Encrypted?
-    status: IntegrationStatus; createdBy: string; createdAt: number; updatedAt?: number; isActive: boolean;
-  }
-export interface IntegrationAction { /* ... */ integrationId: string; action: string; parameters: Record<string, any>; userId: string; conversationId?: string; messageId?: string; async?: boolean; callbackUrl?: string; }
-export interface IntegrationWhatsAppConfig { /* ... */ phoneNumberId: string; businessAccountId: string; accessToken: string; webhookVerifyToken: string; phoneNumber: string; displayName: string; messagingLimit?: number; templates?: any[];}
-export interface IntegrationGoogleCalendarConfig { /* ... */ accessToken: string; refreshToken: string; expiresAt: number; scope: string; calendarId: string; timezone?: string; }
+  id: string;
+  agentId: string;
+  name: string;
+  description?: string;
+  type: IntegrationType;
+  provider: string; // e.g., 'whatsapp', 'google'
+  config: string | object; // JSON string o un objeto parseado (IntegrationWhatsAppConfig, IntegrationGoogleCalendarConfig, etc.)
+  credentials?: string; // Considerar para tokens de corta duración o API keys, pero el accessToken de WhatsApp irá en config.
+  status: IntegrationStatus;
+  createdBy: string; // userId del dueño de la plataforma o del cliente que configuró.
+  createdAt: number;
+  updatedAt?: number;
+  isActive: boolean;
+  // Nuevo campo para identificar al dueño de la plataforma/cliente
+  ownerUserId?: string; // userId del cliente dueño del Agente AI y, por ende, de esta config.
+}
+
+export interface IntegrationAction { /* ... */ 
+  integrationId: string; 
+  action: string; 
+  parameters: Record<string, any>; 
+  userId: string; 
+  conversationId?: string; 
+  messageId?: string; 
+  async?: boolean; 
+  callbackUrl?: string; 
+  customHandlerParams?: Record<string, any>;
+}
+
+export interface IntegrationGoogleCalendarConfig { /* ... */ 
+  accessToken: string; 
+  refreshToken: string; 
+  expiresAt: number; 
+  scope: string; 
+  calendarId: string; 
+  timezone?: string; 
+  maxConcurrentAppointments?: number; 
+}
 export interface IntegrationERPConfig {
   type: string;
   url: string;
@@ -69,7 +103,6 @@ export interface IntegrationERPConfig {
   tenant?: string;
   companyId?: string;
   connectionParams?: Record<string, any>;
-  // Define una estructura más específica si es posible
   schemas?: { name: string; entities: any[] }[];
 }
 export interface IntegrationMicrosoftConfig {
@@ -81,13 +114,17 @@ export interface IntegrationMicrosoftConfig {
   primaryMailbox?: string;
   timezone?: string;
 }
+
 export interface IntegrationWhatsAppConfig {
-  phoneNumberId: string;
-  businessAccountId: string;
-  accessToken: string;
-  webhookVerifyToken: string;
-  phoneNumber: string;
-  displayName: string;
+  phoneNumberId: string; // ID del número de teléfono de WhatsApp del cliente
+  businessAccountId: string; // ID de la cuenta de negocio de WhatsApp del cliente (WABA ID)
+  accessToken: string; // Token de acceso de USUARIO de larga duración del cliente
+  webhookVerifyToken?: string; // Si tu plataforma gestiona el webhook para el cliente
+  phoneNumber: string; // Número de teléfono legible del cliente
+  displayName: string; // Nombre para mostrar del número
   messagingLimit?: number;
-  templates?: any[];
+  templates?: any[]; // Podrías almacenar aquí plantillas gestionadas por el cliente
+  platformManaged?: boolean; // Indica si esta integración fue autorizada por el cliente para gestión de la plataforma
+  userAccessTokenExpiresAt?: number; // Fecha de expiración del userAccessToken
+  // systemAppScopedBusinessAssetId?: string; // ID del activo de negocio (WABA) con alcance de aplicación de sistema (si aplica)
 }

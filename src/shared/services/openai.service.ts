@@ -173,7 +173,7 @@ export class OpenAIService {
         this.logger.debug('Enviando solicitud a OpenAI con herramientas:', tools.map(t => t.function.name));
       }
 
-      const response = await fetch(`${this.endpoint}/openai/deployments/${AI_CONFIG.CHAT_MODEL}/chat/completions?api-version=2023-05-15`, {
+      const response = await fetch(`${this.endpoint}/openai/deployments/${AI_CONFIG.CHAT_MODEL}/chat/completions?api-version=2025-01-01-preview`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

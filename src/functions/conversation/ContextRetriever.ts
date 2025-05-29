@@ -6,17 +6,19 @@ import { toAppError } from "../../shared/utils/error.utils";
 
 export async function ContextRetriever(queueItem: unknown, context: InvocationContext): Promise<void> {
   const logger = createLogger(context);
-  
+  logger.info(`ContextRetriever: FUNCIÓN ACTIVADA. Raw queueItem: ${JSON.stringify(queueItem)}`);
+
   try {
     // Verificar que el mensaje de la cola es válido
+    
     const message = queueItem as any;
     
     if (!message || !message.messageId || !message.conversationId || !message.agentId) {
-      logger.error("Mensaje de cola inválido", { message });
-      return; // No podemos hacer nada más si el mensaje es inválido
+      logger.error("ContextRetriever: Mensaje de cola inválido - faltan campos requeridos", { message });
+      return; 
     }
-    
-    logger.info(`Procesando contexto para mensaje ${message.messageId} en conversación ${message.conversationId}`);
+
+    logger.info(`ContextRetriever: Procesando mensajeId: ${message.messageId}, conversationId: ${message.conversationId}`);
     
     // Obtener contexto para el mensaje
     const handler = new ContextRetrieverHandler(logger);
@@ -25,8 +27,7 @@ export async function ContextRetriever(queueItem: unknown, context: InvocationCo
     logger.info(`Contexto generado para mensaje ${message.messageId}. Encolado para respuesta.`);
     
   } catch (error) {
-    logger.error("Error al procesar contexto:", error);
-    
+    logger.error("ContextRetriever: ERROR NO CAPTURADO EN EL HANDLER:", error);
     // No relanzamos el error para no volver a poner el mensaje en la cola
     // En su lugar, lo manejamos aquí y lo registramos
     const appError = toAppError(error);

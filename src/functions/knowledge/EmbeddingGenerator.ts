@@ -12,9 +12,10 @@ export async function embeddingGenerator(queueItem: unknown, context: Invocation
     // Verificar que el mensaje de la cola es válido
     const message = queueItem as EmbeddingQueueMessage;
     
-    if (!message || !message.chunkId || !message.documentId || !message.knowledgeBaseId || !message.content) {
-      logger.error("Mensaje de cola inválido", { message });
-      return; // No podemos hacer nada más si el mensaje es inválido
+    // NO validar content - permitir que esté vacío
+    if (!message || !message.chunkId || !message.documentId || !message.knowledgeBaseId) {
+      logger.error("Mensaje de cola inválido - faltan campos requeridos", { message });
+      return;
     }
     
     logger.info(`Generando embedding para chunk ${message.chunkId} del documento ${message.documentId}`);
@@ -32,8 +33,6 @@ export async function embeddingGenerator(queueItem: unknown, context: Invocation
   } catch (error) {
     logger.error("Error al generar embedding:", error);
     
-    // No relanzamos el error para no volver a poner el mensaje en la cola
-    // En su lugar, lo manejamos aquí y lo registramos
     const appError = toAppError(error);
     
     logger.error(`Error al generar embedding: ${appError.message}`, {

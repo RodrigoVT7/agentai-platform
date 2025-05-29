@@ -42,7 +42,7 @@ export class AgentListHandler {
       const agents = tableClient.listEntities({
         queryOptions: { filter }
       });
-      
+
       // Procesar resultados
       const allAgents: Agent[] = [];
       for await (const agent of agents) {

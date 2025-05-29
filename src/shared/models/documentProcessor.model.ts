@@ -27,4 +27,5 @@ export interface EmbeddingQueueMessage {
   agentId: string;
   content: string;
   position: number;
+  metadata?: Record<string, any>;
 }

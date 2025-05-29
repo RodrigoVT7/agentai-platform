@@ -26,7 +26,7 @@ export class DocumentUploadValidator {
   ];
   
   // Tamaño máximo del archivo (10 MB)
-  private maxFileSize = 10 * 1024 * 1024;
+  private maxFileSize = 20 * 1024 * 1024;
   
   constructor(logger?: Logger) {
     this.storageService = new StorageService();

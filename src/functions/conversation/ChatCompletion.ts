@@ -6,7 +6,7 @@ import { toAppError } from "../../shared/utils/error.utils";
 
 export async function ChatCompletion(queueItem: unknown, context: InvocationContext): Promise<void> {
   const logger = createLogger(context);
-  
+    logger.info(`ChatCompletion: FUNCIÓN ACTIVADA. InvocationId: ${context.invocationId}. Raw queueItem: ${JSON.stringify(queueItem)}`);
   try {
     // Verificar que el mensaje de la cola es válido
     const message = queueItem as any;

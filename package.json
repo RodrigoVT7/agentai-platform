@@ -10,7 +10,7 @@
     "start": "func start",
     "test": "jest",
     "deploy": "npm run build && func azure functionapp publish YOUR_FUNCTION_APP_NAME",
-    "init-storage": "node dist/src/shared/utils/storage-init.js", 
+    "init-storage": "node dist/src/shared/utils/storage-init.js",
     "reset-storage": "node dist/src/shared/utils/storage-init.js --force"
   },
   "dependencies": {
@@ -37,7 +37,7 @@
     "@types/bcrypt": "^5.0.2",
     "@types/jest": "^29.5.14",
     "@types/jsonwebtoken": "^9.0.9",
-    "@types/node": "^20.17.24",
+    "@types/node": "^20.17.52",
     "@types/node-fetch": "^2.6.12",
     "@types/nodemailer": "^6.4.17",
     "@types/uuid": "^10.0.0",

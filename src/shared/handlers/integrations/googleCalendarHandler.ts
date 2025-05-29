@@ -2,22 +2,21 @@
 
 import { v4 as uuidv4 } from "uuid";
 import { StorageService } from "../../services/storage.service";
-import { STORAGE_TABLES } from "../../constants"; // Asume que DEFAULT_APPOINTMENT_DURATION_MINUTES está aquí o en otro archivo de constantes
+import { STORAGE_TABLES, GOOGLE_CALENDAR_CONFIG } from "../../constants"; 
 import { Logger, createLogger } from "../../utils/logger";
-import { createAppError, toAppError } from "../../utils/error.utils"; // Asegúrate de importar toAppError
+import { createAppError, toAppError } from "../../utils/error.utils";
 import {
   Integration,
   IntegrationType,
   IntegrationStatus,
   IntegrationGoogleCalendarConfig
 } from "../../models/integration.model";
+import { RoleType } from "../../models/userRole.model";
 import { HttpResponseInit } from "@azure/functions";
 import fetch from "node-fetch";
-import { google, calendar_v3 } from "googleapis"; // Importar tipos específicos
-
-// Definir la constante para la duración predeterminada
-const DEFAULT_APPOINTMENT_DURATION_MINUTES = 60;
-const BOOKED_BY_USER_ID_KEY = 'bookedByUserId';
+// Asegúrate de importar calendar_v3 y GaxiosResponse si los usas directamente.
+import { google, Auth, calendar_v3, Common } from "googleapis"; 
+import { GaxiosResponse } from "gaxios"; // Necesario para tipar la respuesta de GAPI
 
 export class GoogleCalendarHandler {
   private storageService: StorageService;
@@ -33,112 +32,108 @@ export class GoogleCalendarHandler {
     this.clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
     this.redirectUri = process.env.GOOGLE_REDIRECT_URI || '';
     if (!this.clientId || !this.clientSecret || !this.redirectUri) {
-      this.logger.warn("Configuración de Google OAuth incompleta");
+      this.logger.warn("Configuración de Google OAuth incompleta. Funciones de autorización podrían fallar.");
     }
   }
 
-  /**
-   * Genera la URL de autorización de Google OAuth 2.0.
-   * Requiere verificación de acceso del usuario al agente.
-   */
   async getAuthUrl(agentId: string, userId: string): Promise<HttpResponseInit> {
     try {
-      // Verificar acceso del usuario al agente
-      const hasAccess = await this.verifyAccess(agentId, userId);
+      const hasAccess = await this.verifyOwnerOrAdminAccess(agentId, userId); 
       if (!hasAccess) {
-        return { status: 403, jsonBody: { error: "No tienes permiso para acceder a este agente" } };
+        return { status: 403, jsonBody: { error: "No tienes permiso para configurar esta integración para el agente." } };
       }
 
       const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
       const scopes = [
-        'https://www.googleapis.com/auth/calendar', // Permiso completo
-        'https://www.googleapis.com/auth/calendar.events' // Permiso específico para eventos
+        'https://www.googleapis.com/auth/calendar', 
+        'https://www.googleapis.com/auth/calendar.events' 
       ];
       const state = Buffer.from(JSON.stringify({ userId, agentId })).toString('base64');
 
       const authUrl = oauth2Client.generateAuthUrl({
-        access_type: 'offline', // Solicitar refresh_token
+        access_type: 'offline', 
         scope: scopes,
         state,
-        prompt: 'consent' // Forzar pantalla de consentimiento para asegurar refresh_token
+        prompt: 'consent' 
       });
 
-      return { status: 200, jsonBody: { authUrl, message: "URL de autorización generada" } };
+      return { status: 200, jsonBody: { authUrl, message: "URL de autorización generada con éxito" } };
     } catch (error) {
-      this.logger.error("Error al generar URL de autorización:", error);
-      const appError = toAppError(error);
+      this.logger.error("Error al generar URL de autorización de Google:", error);
+      const appError = toAppError(error); 
       return { status: appError.statusCode, jsonBody: { error: appError.message, details: appError.details } };
     }
   }
 
-  /**
-   * Procesa el código de autorización de Google OAuth 2.0, obtiene tokens y crea la integración.
-   * Requiere verificación de acceso del usuario al agente.
-   */
   async processAuthCode(code: string, userId: string, agentId: string): Promise<any> {
     try {
-      // Verificar acceso del usuario al agente
-      const hasAccess = await this.verifyAccess(agentId, userId);
+      const hasAccess = await this.verifyOwnerOrAdminAccess(agentId, userId);
       if (!hasAccess) {
-        throw createAppError(403, "No tienes permiso para configurar este agente");
+        throw createAppError(403, "No tienes permiso para completar la configuración de esta integración para el agente.");
       }
 
       const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
       const { tokens } = await oauth2Client.getToken(code);
 
       if (!tokens.access_token) {
-        throw createAppError(400, "No se pudo obtener token de acceso de Google");
+        throw createAppError(400, "No se pudo obtener token de acceso de Google.");
+      }
+      if (!tokens.refresh_token) {
+        this.logger.warn("No se recibió refresh_token de Google. El acceso podría expirar y requerir re-autenticación manual.");
       }
 
       oauth2Client.setCredentials(tokens);
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      
       const calendarResponse = await calendar.calendarList.list();
       const primaryCalendar = calendarResponse.data.items?.find(cal => cal.primary) || calendarResponse.data.items?.[0];
 
       if (!primaryCalendar?.id) {
-          throw createAppError(400, "No se pudo determinar el calendario principal del usuario.");
+          throw createAppError(400, "No se pudo determinar el calendario principal del usuario de Google.");
       }
 
       const integrationId = uuidv4();
       const now = Date.now();
       const config: IntegrationGoogleCalendarConfig = {
         accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token || '', // Guardar refresh token si existe
-        expiresAt: tokens.expiry_date || 0,
+        refreshToken: tokens.refresh_token || '', 
+        expiresAt: tokens.expiry_date || (Date.now() + 3599 * 1000), 
         scope: Array.isArray(tokens.scope) ? tokens.scope.join(' ') : tokens.scope || '',
-        calendarId: primaryCalendar.id
+        calendarId: primaryCalendar.id,
+        timezone: primaryCalendar.timeZone || undefined,
+        maxConcurrentAppointments: GOOGLE_CALENDAR_CONFIG.DEFAULT_MAX_CONCURRENT_APPOINTMENTS // Añadido desde constantes
       };
 
       const integration: Integration = {
-        id: integrationId, agentId, name: `Google Calendar (${primaryCalendar.summary || primaryCalendar.id})`,
-        description: `Integración con Google Calendar (${primaryCalendar.summary})`,
-        type: IntegrationType.CALENDAR, provider: 'google',
-        config: JSON.stringify(config), // Guardar como JSON string
-        credentials: config.refreshToken || config.accessToken, // Guardar refresh token si existe
-        status: IntegrationStatus.ACTIVE, createdBy: userId, createdAt: now, isActive: true
+        id: integrationId,
+        agentId,
+        name: `Google Calendar (${primaryCalendar.summary || primaryCalendar.id})`,
+        description: `Integración con Google Calendar para el calendario: ${primaryCalendar.summary || primaryCalendar.id}`,
+        type: IntegrationType.CALENDAR,
+        provider: 'google',
+        config: JSON.stringify(config), 
+        credentials: config.refreshToken || config.accessToken, 
+        status: IntegrationStatus.ACTIVE, 
+        createdBy: userId,
+        createdAt: now,
+        isActive: true
       };
 
       const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
       await tableClient.createEntity({ partitionKey: agentId, rowKey: integrationId, ...integration });
 
-      this.logger.info(`Integración Google Calendar ${integrationId} creada para agente ${agentId}`);
-      return { integrationId, success: true }; // Devuelve el ID para redirección/confirmación
+      this.logger.info(`Integración Google Calendar ${integrationId} creada exitosamente para agente ${agentId} por usuario ${userId}.`);
+      return { integrationId, success: true, message: "Integración con Google Calendar configurada exitosamente." };
 
     } catch (error) {
       this.logger.error("Error al procesar código de autorización de Google:", error);
-      // Relanzar como AppError estandarizado
-      throw toAppError(error);
+      throw toAppError(error); 
     }
   }
 
-  /**
-   * Obtiene eventos del calendario asociado a la integración.
-   * NO verifica el acceso del 'userId' porque se asume que es llamado por el flujo del agente.
-   */
   async getEvents(integrationId: string, userId: string, options: { startDate?: string, endDate?: string }): Promise<HttpResponseInit> {
     let config: IntegrationGoogleCalendarConfig | null = null;
     try {
-      // 1. Verificar integración
       const integration = await this.fetchIntegration(integrationId);
       if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
       if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') {
@@ -147,9 +142,8 @@ export class GoogleCalendarHandler {
       if (integration.status !== IntegrationStatus.ACTIVE || !integration.isActive) {
         return { status: 400, jsonBody: { error: `La integración Google Calendar (${integration.name}) no está activa.` } };
       }
-      config = integration.config as IntegrationGoogleCalendarConfig; // Asumir parseado
+      config = integration.config as IntegrationGoogleCalendarConfig; 
 
-      // 2. Refrescar token si es necesario
       if (config.expiresAt < Date.now()) {
         const refreshResult = await this.refreshToken(integration);
         if (!refreshResult.success) return { status: 401, jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error } };
@@ -157,7 +151,6 @@ export class GoogleCalendarHandler {
         if (refreshResult.expiresAt) config.expiresAt = refreshResult.expiresAt;
       }
 
-      // 3. Crear cliente y obtener eventos
       const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
       oauth2Client.setCredentials({ access_token: config.accessToken });
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
@@ -170,16 +163,15 @@ export class GoogleCalendarHandler {
       });
       const events = eventsResponse.data.items || [];
 
-      // 4. Devolver resultado
       return {
         status: 200,
         jsonBody: {
-          success: true, // Flag de éxito
-          message: `Se encontraron ${events.length} eventos.`, // Mensaje para LLM
-          result: { // Objeto con detalles
+          success: true, 
+          message: `Se encontraron ${events.length} eventos.`, 
+          result: { 
               integrationId,
               calendarId: config.calendarId,
-              events: events.map(e => ({ id: e.id, summary: e.summary, start: e.start, end: e.end })), // Simplificar eventos
+              events: events.map(e => ({ id: e.id, summary: e.summary, start: e.start, end: e.end })), 
               period: { start: timeMin, end: timeMax }
           }
         }
@@ -191,318 +183,483 @@ export class GoogleCalendarHandler {
     }
   }
 
-    /**
-   * Crea un nuevo evento en Google Calendar, calculando la hora de fin si no se proporciona
-   * y almacenando el ID del usuario que reserva.
-   * @param integrationId ID de la integración de Google Calendar
-   * @param eventData Datos del evento proporcionados por el LLM
-   * @param requestingUserId ID del usuario que reserva (el endUserId en el flujo del agente)
-   * @returns Resultado de la creación del evento
-   */
-    async createEvent(integrationId: string, eventData: any, requestingUserId: string): Promise<HttpResponseInit> {
-      let config: IntegrationGoogleCalendarConfig | null = null;
-      try {
-        // 1. Verificar integración
-        const integration = await this.fetchIntegration(integrationId);
-        if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
-        if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') {
-          return { status: 400, jsonBody: { error: "La integración no es de Google Calendar" } };
-        }
-        if (integration.status !== IntegrationStatus.ACTIVE || !integration.isActive) {
-          return { status: 400, jsonBody: { error: `La integración Google Calendar (${integration.name}) no está activa.` } };
-        }
-        config = integration.config as IntegrationGoogleCalendarConfig;
-  
-        // 2. Refrescar token si es necesario
-        if (config.expiresAt < Date.now()) {
-          const refreshResult = await this.refreshToken(integration);
-          if (!refreshResult.success) return { status: 401, jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error } };
-          if (refreshResult.accessToken) config.accessToken = refreshResult.accessToken;
-          if (refreshResult.expiresAt) config.expiresAt = refreshResult.expiresAt;
-        }
-  
-        // 3. Preparar datos del evento y calcular fin si falta
-        let { summary, start, end, location, description, attendees, reminders } = eventData;
-        if (!summary) throw createAppError(400, "Falta el título del evento (summary).");
-        if (!start || (!start.dateTime && !start.date)) throw createAppError(400, "Falta fecha/hora de inicio válida (start).");
-        if (start.dateTime && !start.timeZone) {
-             this.logger.warn(`Falta timeZone en 'start' para evento ${summary}. Usando UTC como fallback.`);
-             start.timeZone = 'UTC';
-        }
-  
-        if (!end && start.dateTime) {
-             try {
-                 const startDate = new Date(start.dateTime);
-                 const durationMinutes = DEFAULT_APPOINTMENT_DURATION_MINUTES;
-                 const endDate = new Date(startDate.getTime() + durationMinutes * 60000);
-                 end = { dateTime: endDate.toISOString(), timeZone: start.timeZone };
-                 this.logger.info(`Hora de fin calculada automáticamente: ${end.dateTime} (${end.timeZone})`);
-             } catch (dateError) { throw createAppError(400, `Formato de start.dateTime inválido: ${start.dateTime}`); }
-         } else if (!end && start.date) {
-               try {
-                 const startDate = new Date(start.date + 'T00:00:00Z');
-                 const endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
-                 end = { date: endDate.toISOString().split('T')[0] };
-                 this.logger.info(`Fecha de fin calculada para evento de día completo: ${end.date}`);
-               } catch (dateError){ throw createAppError(400, `Formato de start.date inválido: ${start.date}`); }
-         }
-        if (!end || (!end.dateTime && !end.date)) throw createAppError(400, "Falta fecha/hora de fin (end). No se pudo calcular.");
-  
-        // 4. Crear cliente OAuth y Calendar
-        const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
-        oauth2Client.setCredentials({ access_token: config.accessToken });
-        const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-  
-        // 5. Construir el cuerpo de la solicitud con tipos correctos y propiedades extendidas
-        const eventRequestBody: calendar_v3.Schema$Event = {
-          summary,
-          location: typeof location === 'object' ? location.displayName : location,
-          description,
-          start: start as calendar_v3.Schema$EventDateTime,
-          end: end as calendar_v3.Schema$EventDateTime,
-          attendees: attendees ? attendees.map((att: any) => ({ email: att.email })) : undefined,
-          reminders: reminders || { useDefault: true },
-          // *** Usar la constante definida ***
-          extendedProperties: {
-            private: {
-              [BOOKED_BY_USER_ID_KEY]: requestingUserId // Guardar el ID del usuario que reserva
-            }
-          }
-        };
-  
-        // 6. Crear evento
-        this.logger.info(`Creando evento en Google Calendar (ID: ${config.calendarId}) para usuario ${requestingUserId}:`, eventRequestBody);
-        const response = await calendar.events.insert({ calendarId: config.calendarId, requestBody: eventRequestBody });
-        const createdEvent = response.data;
-        this.logger.info(`Evento ${createdEvent.id} creado exitosamente por ${requestingUserId}.`);
-  
-        // 7. Devolver respuesta exitosa
-        return {
-          status: 201,
-          jsonBody: {
-            success: true, message: "Evento creado con éxito",
-            result: { id: createdEvent.id, summary: createdEvent.summary, htmlLink: createdEvent.htmlLink,
-                      start: createdEvent.start, end: createdEvent.end, created: createdEvent.created }
-          }
-        };
-      } catch (error) {
-        this.logger.error(`Error al crear evento para integración ${integrationId} solicitado por ${requestingUserId}:`, error);
-        const appError = toAppError(error);
-        return { status: appError.statusCode, jsonBody: { success: false, error: appError.message, details: appError.details } };
-      }
-    }
-  
-  /**
-   * Actualiza un evento existente, verificando que el usuario solicitante sea el propietario.
-   * Combina los datos existentes con los nuevos datos proporcionados.
-   * @param integrationId ID de la integración
-   * @param eventId ID del evento a actualizar
-   * @param eventData Nuevos datos para el evento (solo los campos a cambiar)
-   * @param requestingUserId ID del usuario que solicita la actualización
-   * @returns Resultado de la actualización
-   */
-  async updateEvent(integrationId: string, eventId: string, eventData: any, requestingUserId: string): Promise<HttpResponseInit> {
+  async createEvent(integrationId: string, eventData: any, requestingUserId: string): Promise<HttpResponseInit> {
+    let integration: Integration | null = null;
     let config: IntegrationGoogleCalendarConfig | null = null;
     try {
-      // 1. Verificar integración
-      const integration = await this.fetchIntegration(integrationId);
-      if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
+      integration = await this.fetchIntegration(integrationId);
+      if (!integration) {
+        return { status: 404, jsonBody: { success: false, error: "Integración no encontrada." } };
+      }
       if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') {
-        return { status: 400, jsonBody: { error: "La integración no es de Google Calendar" } };
+        return { status: 400, jsonBody: { success: false, error: "La integración no es de Google Calendar." } };
       }
       if (integration.status !== IntegrationStatus.ACTIVE || !integration.isActive) {
-        return { status: 400, jsonBody: { error: `La integración Google Calendar (${integration.name}) no está activa.` } };
+        return { status: 400, jsonBody: { success: false, error: `La integración Google Calendar (${integration.name}) no está activa.` } };
       }
+      
       config = integration.config as IntegrationGoogleCalendarConfig;
+      const maxConcurrent = config.maxConcurrentAppointments ?? GOOGLE_CALENDAR_CONFIG.DEFAULT_MAX_CONCURRENT_APPOINTMENTS;
 
-      // 2. Refrescar token si es necesario
       if (config.expiresAt < Date.now()) {
         const refreshResult = await this.refreshToken(integration);
-        if (!refreshResult.success) return { status: 401, jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error } };
-        if (refreshResult.accessToken) config.accessToken = refreshResult.accessToken;
-        if (refreshResult.expiresAt) config.expiresAt = refreshResult.expiresAt;
+        if (!refreshResult.success || !refreshResult.accessToken || !refreshResult.expiresAt) {
+          return { status: 401, jsonBody: { success: false, error: "Error al actualizar token de acceso.", details: refreshResult.error } };
+        }
+        config.accessToken = refreshResult.accessToken;
+        config.expiresAt = refreshResult.expiresAt;
       }
 
-      // 3. Crear cliente y API de Calendar
+      let { 
+        summary, 
+        start, 
+        end, 
+        location, 
+        description, 
+        attendees, 
+        reminders,
+        addConferenceCall = false, 
+        sendNotifications = 'default' 
+      } = eventData;
+
+      if (!summary) throw createAppError(400, "Falta el título del evento (summary).");
+      if (!start || (!start.dateTime && !start.date)) throw createAppError(400, "Falta fecha/hora de inicio válida (start).");
+      
+      const eventTimeZone = start.timeZone || config.timezone || (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC';
+      if (start.dateTime && !start.timeZone) start.timeZone = eventTimeZone;
+
+      if (!end && start.dateTime) {
+           try {
+               const startDateObj = new Date(start.dateTime);
+               const durationMinutes = GOOGLE_CALENDAR_CONFIG.DEFAULT_APPOINTMENT_DURATION_MINUTES;
+               const endDateObj = new Date(startDateObj.getTime() + durationMinutes * 60000);
+               end = { dateTime: endDateObj.toISOString(), timeZone: start.timeZone };
+               this.logger.info(`Hora de fin calculada: ${end.dateTime} (${end.timeZone})`);
+           } catch (dateError) { throw createAppError(400, `Formato de start.dateTime inválido: ${start.dateTime}`); }
+       } else if (!end && start.date) { 
+             try {
+               const startDateObj = new Date(start.date + 'T00:00:00Z'); 
+               const endDateObj = new Date(startDateObj.getTime() + 24 * 60 * 60 * 1000);
+               end = { date: endDateObj.toISOString().split('T')[0] };
+               this.logger.info(`Fecha de fin calculada para evento de día completo: ${end.date}`);
+             } catch (dateError){ throw createAppError(400, `Formato de start.date inválido: ${start.date}`); }
+       }
+      if (!end || (!end.dateTime && !end.date)) throw createAppError(400, "Falta fecha/hora de fin (end) y no se pudo calcular.");
+      if (end.dateTime && !end.timeZone) end.timeZone = start.timeZone || eventTimeZone; 
+
       const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
-      oauth2Client.setCredentials({ access_token: config.accessToken });
+      oauth2Client.setCredentials({ access_token: config.accessToken, refresh_token: config.refreshToken });
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
-      // 4. *** OBTENER EVENTO EXISTENTE Y VERIFICAR PROPIETARIO ***
-      let existingEvent: calendar_v3.Schema$Event;
-      let bookedByUserId: string | undefined;
+      // Verificación de Concurrencia
+      const checkTimeMin = start.dateTime || new Date(start.date + 'T00:00:00Z').toISOString(); 
+      const checkTimeMax = end.dateTime || new Date(end.date + 'T23:59:59Z').toISOString(); 
+      let existingEventsCount = 0;
+
       try {
-          this.logger.debug(`Obteniendo evento ${eventId} para verificar propietario y obtener datos actuales...`);
-          const getResponse = await calendar.events.get({ calendarId: config.calendarId, eventId });
-          existingEvent = getResponse.data; // Guardar datos actuales
-          if (!existingEvent) throw new Error("No se recibieron datos del evento existente."); // Seguridad extra
-
-          bookedByUserId = existingEvent.extendedProperties?.private?.[BOOKED_BY_USER_ID_KEY];
-          this.logger.debug(`Evento ${eventId} reservado por: ${bookedByUserId}. Solicitante: ${requestingUserId}`);
-
-          if (bookedByUserId && bookedByUserId !== requestingUserId) {
-              this.logger.warn(`Acceso denegado: Usuario ${requestingUserId} intentó modificar evento ${eventId} reservado por ${bookedByUserId}`);
-              return { status: 403, jsonBody: { success: false, error: "No tienes permiso para modificar esta cita porque pertenece a otro usuario." } };
+          this.logger.info(`[${integration.id}] Verificando eventos en calendario '${config.calendarId}' entre ${checkTimeMin} y ${checkTimeMax}`);
+          const existingEventsResponse = await calendar.events.list({
+              calendarId: config.calendarId, timeMin: checkTimeMin, timeMax: checkTimeMax, singleEvents: true,
+          });
+          if (existingEventsResponse.data.items) {
+              existingEventsCount = existingEventsResponse.data.items.length;
+              this.logger.info(`[${integration.id}] Se encontraron ${existingEventsCount} eventos existentes en el horario.`);
           }
-          if (!bookedByUserId) {
-              this.logger.warn(`Evento ${eventId} no tiene propietario registrado (${BOOKED_BY_USER_ID_KEY}). Permitiendo modificación por ${requestingUserId}.`);
-          }
-
-      } catch (getError: any) {
-          if (getError.code === 404) {
-              return { status: 404, jsonBody: { success: false, error: "La cita que intentas modificar no fue encontrada." } };
-          }
-          this.logger.error(`Error al obtener evento ${eventId} para verificación:`, getError);
-          throw createAppError(500, "Error al verificar la cita existente.");
-      }
-      // --- FIN Verificación ---
-
-      // 5. *** COMBINAR DATOS EXISTENTES CON NUEVOS DATOS ***
-      //    Construir el cuerpo de la actualización usando los datos existentes
-      //    como base y sobrescribiendo solo los campos proporcionados en eventData.
-      const updateBody: calendar_v3.Schema$Event = {
-          // Mantener campos existentes
-          summary: eventData.summary !== undefined ? eventData.summary : existingEvent.summary,
-          location: eventData.location !== undefined ? (typeof eventData.location === 'object' ? eventData.location.displayName : eventData.location) : existingEvent.location,
-          description: eventData.description !== undefined ? eventData.description : existingEvent.description,
-          start: eventData.start !== undefined ? eventData.start as calendar_v3.Schema$EventDateTime : existingEvent.start,
-          end: eventData.end !== undefined ? eventData.end as calendar_v3.Schema$EventDateTime : existingEvent.end,
-          attendees: eventData.attendees !== undefined ? eventData.attendees.map((att: any) => ({ email: att.email })) : existingEvent.attendees,
-          reminders: eventData.reminders !== undefined ? eventData.reminders : existingEvent.reminders,
-          // Mantener o añadir propietario
-          extendedProperties: {
-              private: {
-                  ...existingEvent.extendedProperties?.private, // Mantener otras propiedades si existen
-                  [BOOKED_BY_USER_ID_KEY]: bookedByUserId || requestingUserId // Mantener o añadir
+      } catch (listError: any) {
+          this.logger.error(`[${integration.id}] Error al verificar eventos existentes:`, listError);
+          // Devolvemos un error 500 porque la verificación en sí falló.
+          return {
+              status: 500, // Internal Server Error
+              jsonBody: { 
+                success: false, 
+                error: "Error al verificar disponibilidad del calendario.", 
+                message: "No se pudo comprobar si hay citas existentes. Intenta de nuevo más tarde.", 
+                details: listError.message 
               }
-          },
-          // Importante: Mantener otros campos que no se modifican explícitamente
-          // como recurrence, status, etc., si es necesario.
-          // Por simplicidad, aquí solo incluimos los más comunes.
-          // Si necesitas mantener más campos, agrégalos aquí desde 'existingEvent'.
-          // Ejemplo: status: existingEvent.status,
+          };
+      }
+
+      if (existingEventsCount >= maxConcurrent) {
+          this.logger.warn(`[${integration.id}] Conflicto de concurrencia. Eventos existentes: ${existingEventsCount}, Límite: ${maxConcurrent}.`);
+          let conflictMessage = `El horario solicitado de ${start.dateTime || start.date} a ${end.dateTime || end.date} ya ha alcanzado el límite de ${maxConcurrent} cita(s) permitida(s).`;
+          if (maxConcurrent === 1) {
+              conflictMessage = `El horario solicitado de ${start.dateTime || start.date} a ${end.dateTime || end.date} ya está ocupado. Por favor, elige otro horario.`;
+          }
+          // Usamos 409 (Conflict) para este error específico de disponibilidad.
+          return {
+              status: 409, // Conflict
+              jsonBody: { 
+                success: false, 
+                error: "Límite de citas alcanzado o slot no disponible", 
+                message: conflictMessage, 
+                details: { existingEventsCount, maxConcurrentAppointments: maxConcurrent, requestedSlotUnavailable: true } // flag adicional
+              }
+          };
+      }
+      // Fin Verificación de Concurrencia
+
+      this.logger.info(`[${integration.id}] Procediendo a crear evento. Eventos existentes: ${existingEventsCount}, Límite: ${maxConcurrent}.`);
+      const eventRequestBody: calendar_v3.Schema$Event = {
+        summary,
+        location: typeof location === 'string' ? location : (location?.displayName || undefined),
+        description,
+        start: start as calendar_v3.Schema$EventDateTime,
+        end: end as calendar_v3.Schema$EventDateTime,
+        attendees: attendees ? attendees.map((att: any) => ({ email: att.email })) : undefined,
+        reminders: reminders || { useDefault: true },
+        extendedProperties: {
+          private: {
+            [GOOGLE_CALENDAR_CONFIG.BOOKED_BY_USER_ID_KEY]: requestingUserId 
+          }
+        }
       };
+      
+      let determinedSendUpdates: "all" | "externalOnly" | "none" | undefined = undefined;
+      if (addConferenceCall) {
+        eventRequestBody.conferenceData = {
+          createRequest: {
+            requestId: uuidv4(), 
+            conferenceSolutionKey: { type: "hangoutsMeet" }
+          }
+        };
+        if (sendNotifications !== 'none') {
+          determinedSendUpdates = "all"; 
+        } else {
+          determinedSendUpdates = "none";
+        }
+      } else if (sendNotifications !== 'default') {
+        determinedSendUpdates = sendNotifications as "all" | "externalOnly" | "none";
+      } else if (attendees && attendees.length > 0) {
+        determinedSendUpdates = "all";
+      }
 
-      // Validar que al menos algo cambió (opcional, pero evita llamadas innecesarias)
-      // if (JSON.stringify(updateBody) === JSON.stringify(existingEvent)) {
-      //      return { status: 200, jsonBody: { message: "No se detectaron cambios en la cita." } };
-      // }
+      const response: GaxiosResponse<calendar_v3.Schema$Event> = await calendar.events.insert({ 
+        calendarId: config.calendarId, 
+        requestBody: eventRequestBody,
+        conferenceDataVersion: addConferenceCall ? 1 : 0, 
+        sendUpdates: determinedSendUpdates 
+      });
+      const createdEvent = response.data;
+      this.logger.info(`Evento ${createdEvent.id} creado en calendario ${config.calendarId} por ${requestingUserId}. Conferencia: ${addConferenceCall}. Notificaciones: ${determinedSendUpdates || 'predeterminado de Google'}.`);
 
-
-      // 6. Actualizar evento
-      this.logger.info(`Actualizando evento ${eventId} en Google Calendar (ID: ${config.calendarId}) solicitado por ${requestingUserId}:`, updateBody);
-      // Usar 'update' en lugar de 'patch' si quieres reemplazar todo el evento
-      // Usar 'patch' si solo quieres enviar los campos modificados (requiere construir updateBody diferente)
-      // 'update' es más seguro para asegurar que se mantienen los campos correctos.
-      const response = await calendar.events.update({ calendarId: config.calendarId, eventId, requestBody: updateBody });
-      const updatedEvent = response.data;
-      this.logger.info(`Evento ${eventId} actualizado exitosamente por ${requestingUserId}.`);
-
-      // 7. Devolver respuesta
       return {
-        status: 200,
+        status: 201,
         jsonBody: {
-          success: true, message: "Evento actualizado con éxito",
-          result: { id: updatedEvent.id, summary: updatedEvent.summary, htmlLink: updatedEvent.htmlLink, updated: updatedEvent.updated }
+          success: true, message: "Evento creado con éxito.",
+          result: { 
+            id: createdEvent.id, 
+            summary: createdEvent.summary, 
+            htmlLink: createdEvent.htmlLink,       
+            hangoutLink: createdEvent.hangoutLink,  
+            start: createdEvent.start, 
+            end: createdEvent.end, 
+            created: createdEvent.created,
+            conferenceData: createdEvent.conferenceData 
+          }
         }
       };
     } catch (error) {
-      this.logger.error(`Error al actualizar evento ${eventId} para integración ${integrationId} solicitado por ${requestingUserId}:`, error);
+      this.logger.error(`Error al crear evento para integración ${integrationId} solicitado por ${requestingUserId}:`, error);
+      const appError = toAppError(error);
+      // Si el error ya es 409, mantenerlo.
+      const statusCode = (error as any).statusCode === 409 ? 409 : appError.statusCode;
+      return { 
+        status: statusCode, 
+        jsonBody: { 
+            success: false, 
+            error: appError.message, 
+            details: appError.details,
+            requestedSlotUnavailable: statusCode === 409 // Añadir flag si es un 409
+        } 
+      };
+    }
+  }
+
+  async updateEvent(integrationId: string, eventId: string, eventData: any, requestingUserId: string): Promise<HttpResponseInit> {
+    let integration: Integration | null = null;
+    let config: IntegrationGoogleCalendarConfig | null = null;
+    try {
+      integration = await this.fetchIntegration(integrationId);
+      if (!integration) return { status: 404, jsonBody: { success: false, error: "Integración no encontrada." }};
+      if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') return { status: 400, jsonBody: { success: false, error: "La integración no es de Google Calendar." }};
+      if (integration.status !== IntegrationStatus.ACTIVE || !integration.isActive) return { status: 400, jsonBody: { success: false, error: `La integración Google Calendar (${integration.name}) no está activa.` }};
+      
+      config = integration.config as IntegrationGoogleCalendarConfig;
+      if (config.expiresAt < Date.now()) {
+        const refreshResult = await this.refreshToken(integration);
+        if (!refreshResult.success || !refreshResult.accessToken || !refreshResult.expiresAt) return { status: 401, jsonBody: { success: false, error: "Error al actualizar token de acceso.", details: refreshResult.error }};
+        config.accessToken = refreshResult.accessToken;
+        config.expiresAt = refreshResult.expiresAt;
+      }
+
+      const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
+      oauth2Client.setCredentials({ access_token: config.accessToken, refresh_token: config.refreshToken });
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+      let existingEvent: calendar_v3.Schema$Event;
+      try {
+        const getResponse = await calendar.events.get({ calendarId: config.calendarId, eventId });
+        existingEvent = getResponse.data;
+        if (!existingEvent) throw new Error("Evento no encontrado para actualizar.");
+      } catch (getError: any) {
+        if (getError.code === 404) return { status: 404, jsonBody: { success: false, error: "La cita que intentas modificar no fue encontrada." }};
+        this.logger.error(`Error obteniendo evento ${eventId} para actualizar:`, getError);
+        throw createAppError(500, "Error al verificar la cita existente antes de actualizar.");
+      }
+
+      const bookedByUserId = existingEvent.extendedProperties?.private?.[GOOGLE_CALENDAR_CONFIG.BOOKED_BY_USER_ID_KEY];
+      const isAdminAccess = await this.verifyOwnerOrAdminAccess(integration.agentId, requestingUserId);
+
+      if (bookedByUserId && bookedByUserId !== requestingUserId && !isAdminAccess) {
+        this.logger.warn(`Acceso denegado: Usuario ${requestingUserId} intentó modificar evento ${eventId} de ${bookedByUserId} sin ser admin.`);
+        return { status: 403, jsonBody: { success: false, error: "No tienes permiso para modificar esta cita porque pertenece a otro usuario." }};
+      }
+      if (isAdminAccess && bookedByUserId && bookedByUserId !== requestingUserId) {
+          this.logger.info(`Admin ${requestingUserId} modificando evento ${eventId} de ${bookedByUserId}.`);
+      }
+
+      const updateBody: calendar_v3.Schema$Event = {};
+      let conferenceDataModified = false;
+      let determinedSendUpdates: "all" | "externalOnly" | "none" | undefined = undefined;
+
+      if (eventData.summary !== undefined) updateBody.summary = eventData.summary;
+      if (eventData.location !== undefined) updateBody.location = typeof eventData.location === 'string' ? eventData.location : eventData.location?.displayName;
+      if (eventData.description !== undefined) updateBody.description = eventData.description;
+      if (eventData.start !== undefined) updateBody.start = eventData.start as calendar_v3.Schema$EventDateTime;
+      if (eventData.end !== undefined) updateBody.end = eventData.end as calendar_v3.Schema$EventDateTime;
+      if (eventData.attendees !== undefined) { // Permitir pasar un array vacío para eliminar todos los asistentes
+        updateBody.attendees = eventData.attendees.map((att: any) => ({ email: att.email }));
+      }
+      if (eventData.reminders !== undefined) updateBody.reminders = eventData.reminders;
+
+      if (eventData.addConferenceCall !== undefined) {
+        conferenceDataModified = true;
+        if (eventData.addConferenceCall === true) {
+          updateBody.conferenceData = {
+            createRequest: {
+              requestId: uuidv4(),
+              conferenceSolutionKey: { type: "hangoutsMeet" }
+            }
+          };
+        } else { 
+          (updateBody as any).conferenceData = null; // API de Google usa null para borrar
+        }
+      }
+      
+      const sendNotifications = eventData.sendNotifications || 'default';
+      if (sendNotifications !== 'default') {
+          determinedSendUpdates = sendNotifications as "all" | "externalOnly" | "none";
+      } else if (updateBody.attendees && updateBody.attendees.length > 0 && (eventData.addConferenceCall === undefined || eventData.addConferenceCall === false )) {
+          determinedSendUpdates = "all";
+      } else if (eventData.addConferenceCall === true && sendNotifications !== 'none') {
+           determinedSendUpdates = "all"; 
+      }
+
+      if (Object.keys(updateBody).length === 0 && !conferenceDataModified) { // Ajuste: verificar también conferenceDataModified
+           return { status: 200, jsonBody: { success: true, message: "No se especificaron cambios para el evento.", result: { id: eventId } }};
+      }
+      
+      if (!updateBody.extendedProperties && existingEvent.extendedProperties) {
+        updateBody.extendedProperties = existingEvent.extendedProperties;
+      } else if (updateBody.extendedProperties || (updateBody.extendedProperties === undefined && existingEvent.extendedProperties && !existingEvent.extendedProperties.private?.[GOOGLE_CALENDAR_CONFIG.BOOKED_BY_USER_ID_KEY])) {
+          // Asegurar que bookedByUserId se preserve si existe, o se establezca si no.
+         updateBody.extendedProperties = updateBody.extendedProperties || {};
+         updateBody.extendedProperties.private = {
+            ...(updateBody.extendedProperties.private || {}),
+            [GOOGLE_CALENDAR_CONFIG.BOOKED_BY_USER_ID_KEY]: bookedByUserId || requestingUserId
+         };
+      }
+
+
+      const response: GaxiosResponse<calendar_v3.Schema$Event> = await calendar.events.update({ 
+          calendarId: config.calendarId, 
+          eventId, 
+          requestBody: updateBody,
+          conferenceDataVersion: conferenceDataModified ? 1 : 0, 
+          sendUpdates: determinedSendUpdates
+      });
+      const updatedEvent = response.data;
+      this.logger.info(`Evento ${updatedEvent.id} actualizado en calendario ${config.calendarId} por ${requestingUserId}.`);
+
+      return {
+        status: 200,
+        jsonBody: {
+          success: true, message: "Evento actualizado con éxito.",
+          result: { 
+              id: updatedEvent.id, 
+              summary: updatedEvent.summary, 
+              htmlLink: updatedEvent.htmlLink, 
+              hangoutLink: updatedEvent.hangoutLink,
+              updated: updatedEvent.updated,
+              start: updatedEvent.start, // Devolver start/end actualizados
+              end: updatedEvent.end,
+              attendees: updatedEvent.attendees,
+              conferenceData: updatedEvent.conferenceData
+            }
+        }
+      };
+    } catch (error:any) {
+      if (error.code === 412) { 
+          this.logger.warn(`Fallo al actualizar evento ${eventId} debido a ETag mismatch (modificación concurrente).`);
+          return { status: 412, jsonBody: { success: false, error: "La cita fue modificada por otra persona mientras intentabas guardarla. Por favor, recarga y vuelve a intentarlo." } };
+      }
+      this.logger.error(`Error al actualizar evento ${eventId} para integración ${integrationId}:`, error);
       const appError = toAppError(error);
       return { status: appError.statusCode, jsonBody: { success: false, error: appError.message, details: appError.details } };
     }
   }
   
-    /**
-     * Elimina un evento de Google Calendar, verificando que el usuario solicitante sea el propietario.
-     * @param integrationId ID de la integración
-     * @param eventId ID del evento a eliminar
-     * @param requestingUserId ID del usuario que solicita la eliminación
-     * @returns Resultado de la eliminación
-     */
-    async deleteEvent(integrationId: string, eventId: string, requestingUserId: string): Promise<HttpResponseInit> {
-       let config: IntegrationGoogleCalendarConfig | null = null;
-       try {
-           // 1. Verificar integración
-           const integration = await this.fetchIntegration(integrationId);
-           if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
-           if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') {
-               return { status: 400, jsonBody: { error: "La integración no es de Google Calendar" } };
-           }
-           if (integration.status !== IntegrationStatus.ACTIVE || !integration.isActive) {
-               return { status: 400, jsonBody: { error: `La integración Google Calendar (${integration.name}) no está activa.` } };
-           }
-           config = integration.config as IntegrationGoogleCalendarConfig;
-  
-           // 2. Refrescar token si es necesario
-           if (config.expiresAt < Date.now()) {
-               const refreshResult = await this.refreshToken(integration);
-               if (!refreshResult.success) return { status: 401, jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error } };
-               if (refreshResult.accessToken) config.accessToken = refreshResult.accessToken;
-               if (refreshResult.expiresAt) config.expiresAt = refreshResult.expiresAt;
-           }
-  
-           // 3. Crear cliente y API de Calendar
-           const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
-           oauth2Client.setCredentials({ access_token: config.accessToken });
-           const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-  
-           // 4. *** NUEVO: Obtener evento y verificar propietario ***
-           try {
-               this.logger.debug(`Obteniendo evento ${eventId} para verificar propietario antes de eliminar...`);
-               const getResponse = await calendar.events.get({ calendarId: config.calendarId, eventId });
-               // *** Usar la constante definida ***
-               const bookedByUserId = getResponse.data?.extendedProperties?.private?.[BOOKED_BY_USER_ID_KEY];
-               this.logger.debug(`Evento ${eventId} reservado por: ${bookedByUserId}. Solicitante: ${requestingUserId}`);
-  
-               if (bookedByUserId && bookedByUserId !== requestingUserId) {
-                   this.logger.warn(`Acceso denegado: Usuario ${requestingUserId} intentó eliminar evento ${eventId} reservado por ${bookedByUserId}`);
-                   return { status: 403, jsonBody: { success: false, error: "No tienes permiso para eliminar esta cita porque pertenece a otro usuario." } };
-               }
-               if (!bookedByUserId) {
-                   // *** Usar la constante definida ***
-                   this.logger.warn(`Evento ${eventId} no tiene propietario registrado (${BOOKED_BY_USER_ID_KEY}). Permitiendo eliminación por ${requestingUserId}.`);
-               }
-           } catch (getError: any) {
-               if (getError.code === 404) {
-                   // Si no se encuentra, considerar la eliminación como exitosa (idempotencia)
-                   this.logger.warn(`Intento de eliminar evento ${eventId} que no fue encontrado (404 Not Found). Considerado éxito.`);
-                   return { status: 200, jsonBody: { success: true, message: "La cita ya había sido eliminada.", result: { id: eventId } } };
-               }
-               this.logger.error(`Error al obtener evento ${eventId} para verificación de eliminación:`, getError);
-               throw createAppError(500, "Error al verificar la cita existente antes de eliminar.");
-           }
-           // --- FIN Verificación ---
-  
-           // 5. Eliminar evento
-           this.logger.info(`Eliminando evento ${eventId} de Google Calendar (ID: ${config.calendarId}) solicitado por ${requestingUserId}`);
-           await calendar.events.delete({ calendarId: config.calendarId, eventId });
-           this.logger.info(`Evento ${eventId} eliminado exitosamente por ${requestingUserId}.`);
-  
-           // 6. Devolver respuesta
-           return {
-               status: 200,
-               jsonBody: { success: true, message: "Evento eliminado con éxito", result: { id: eventId } }
-           };
-       } catch (error) {
-           this.logger.error(`Error al eliminar evento ${eventId} para integración ${integrationId} solicitado por ${requestingUserId}:`, error);
-           const appError = toAppError(error);
-           return { status: appError.statusCode, jsonBody: { success: false, error: appError.message, details: appError.details } };
-       }
-    }
+  async deleteEvent(integrationId: string, eventId: string, requestingUserId: string, eventData: any = {}): Promise<HttpResponseInit> {
+    let integration: Integration | null = null;
+    let config: IntegrationGoogleCalendarConfig | null = null;
+    try {
+      integration = await this.fetchIntegration(integrationId);
+      if (!integration) return { status: 404, jsonBody: { success: false, error: "Integración no encontrada." }};
+      if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') return { status: 400, jsonBody: { success: false, error: "La integración no es de Google Calendar." }};
+      if (integration.status !== IntegrationStatus.ACTIVE || !integration.isActive) return { status: 400, jsonBody: { success: false, error: `La integración Google Calendar (${integration.name}) no está activa.` }};
+      
+      config = integration.config as IntegrationGoogleCalendarConfig;
+      if (config.expiresAt < Date.now()) {
+        const refreshResult = await this.refreshToken(integration);
+        if (!refreshResult.success || !refreshResult.accessToken || !refreshResult.expiresAt) return { status: 401, jsonBody: { success: false, error: "Error al actualizar token de acceso.", details: refreshResult.error }};
+        config.accessToken = refreshResult.accessToken;
+        config.expiresAt = refreshResult.expiresAt;
+      }
 
-  /**
-   * Lista los calendarios disponibles para la cuenta asociada a la integración.
-   * Requiere verificación de acceso del usuario a la integración.
-   */
+      const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
+      oauth2Client.setCredentials({ access_token: config.accessToken, refresh_token: config.refreshToken });
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+      try {
+        const getResponse: GaxiosResponse<calendar_v3.Schema$Event> = await calendar.events.get({ calendarId: config.calendarId, eventId });
+        const bookedByUserId = getResponse.data?.extendedProperties?.private?.[GOOGLE_CALENDAR_CONFIG.BOOKED_BY_USER_ID_KEY];
+        
+        const isAdminAccess = await this.verifyOwnerOrAdminAccess(integration.agentId, requestingUserId);
+        if (bookedByUserId && bookedByUserId !== requestingUserId && !isAdminAccess) {
+          this.logger.warn(`Acceso denegado: Usuario ${requestingUserId} intentó eliminar evento ${eventId} de ${bookedByUserId} sin ser admin.`);
+          return { status: 403, jsonBody: { success: false, error: "No tienes permiso para eliminar esta cita porque pertenece a otro usuario." }};
+        }
+         if (isAdminAccess && bookedByUserId && bookedByUserId !== requestingUserId) {
+             this.logger.info(`Admin ${requestingUserId} eliminando evento ${eventId} de ${bookedByUserId}.`);
+         }
+
+      } catch (getError: any) {
+        if (getError.code === 404) {
+          this.logger.warn(`Intento de eliminar evento ${eventId} que no fue encontrado. Considerado éxito.`);
+          return { status: 200, jsonBody: { success: true, message: "La cita ya había sido eliminada o no existía.", result: { id: eventId } }};
+        }
+        this.logger.error(`Error obteniendo evento ${eventId} para eliminar:`, getError);
+        throw createAppError(500, "Error al verificar la cita existente antes de eliminar.");
+      }
+      
+      const sendCancelNotificationsOption = eventData.sendNotifications || 'default';
+      let sendUpdatesValue: "all" | "none" | "externalOnly" = "all"; 
+      if (sendCancelNotificationsOption === 'none') {
+          sendUpdatesValue = "none";
+      } else if (sendCancelNotificationsOption === 'externalOnly') {
+          sendUpdatesValue = "externalOnly";
+      }
+      
+      await calendar.events.delete({ 
+          calendarId: config.calendarId, 
+          eventId,
+          sendUpdates: sendUpdatesValue 
+      });
+      this.logger.info(`Evento ${eventId} eliminado de calendario ${config.calendarId} por ${requestingUserId}. Notificaciones de cancelación: ${sendUpdatesValue}.`);
+
+      return {
+          status: 200,
+          jsonBody: { success: true, message: "Evento eliminado con éxito.", result: { id: eventId } }
+      };
+    } catch (error) {
+      this.logger.error(`Error al eliminar evento ${eventId} para integración ${integrationId}:`, error);
+      const appError = toAppError(error);
+      return { status: appError.statusCode, jsonBody: { success: false, error: appError.message, details: appError.details } };
+    }
+  }
+
+  async getMyBookedEvents(integrationId: string, requestingUserId: string, options: { startDate?: string, endDate?: string }): Promise<HttpResponseInit> {
+    let integration: Integration | null = null;
+    let config: IntegrationGoogleCalendarConfig | null = null;
+    try {
+        integration = await this.fetchIntegration(integrationId);
+        if (!integration) return { status: 404, jsonBody: { success: false, error: "Integración no encontrada." } };
+        if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') {
+            return { status: 400, jsonBody: { success: false, error: "La integración no es de Google Calendar." } };
+        }
+        if (integration.status !== IntegrationStatus.ACTIVE || !integration.isActive) {
+            return { status: 400, jsonBody: { success: false, error: `La integración Google Calendar (${integration.name}) no está activa.` } };
+        }
+        config = integration.config as IntegrationGoogleCalendarConfig;
+        if (config.expiresAt < Date.now()) {
+            const refreshResult = await this.refreshToken(integration);
+            if (!refreshResult.success || !refreshResult.accessToken || !refreshResult.expiresAt) {
+                return { status: 401, jsonBody: { success: false, error: "Error al actualizar token de acceso.", details: refreshResult.error } };
+            }
+            config.accessToken = refreshResult.accessToken;
+            config.expiresAt = refreshResult.expiresAt;
+        }
+
+        const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
+        oauth2Client.setCredentials({ access_token: config.accessToken, refresh_token: config.refreshToken });
+        const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+        const timeMin = options.startDate ? new Date(options.startDate).toISOString() : new Date(0).toISOString(); 
+        const timeMax = options.endDate ? new Date(options.endDate).toISOString() : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(); 
+
+        const listParams: calendar_v3.Params$Resource$Events$List = {
+            calendarId: config.calendarId,
+            timeMin,
+            timeMax,
+            singleEvents: true,
+            orderBy: 'startTime',
+            maxResults: 250, 
+           privateExtendedProperty: [`${GOOGLE_CALENDAR_CONFIG.BOOKED_BY_USER_ID_KEY}=${requestingUserId}`]
+        };
+        
+        const eventsResponse: GaxiosResponse<calendar_v3.Schema$Events> = await calendar.events.list(listParams);
+
+        const myBookedEvents = eventsResponse.data.items || [];
+        
+        this.logger.info(`[${integrationId}] Se encontraron ${myBookedEvents.length} eventos agendados por usuario ${requestingUserId} usando filtro de propiedad extendida.`);
+
+        return {
+            status: 200,
+            jsonBody: {
+                success: true,
+                message: myBookedEvents.length > 0 ? `Se encontraron ${myBookedEvents.length} citas agendadas por ti.` : "No se encontraron citas agendadas por ti en el periodo solicitado.",
+                result: {
+                    integrationId,
+                    calendarId: config.calendarId,
+                    events: myBookedEvents.map((e: calendar_v3.Schema$Event) => ({ // Tipo explícito para 'e'
+                        id: e.id, 
+                        summary: e.summary, 
+                        start: e.start, 
+                        end: e.end, 
+                        location: e.location,
+                        description: e.description,
+                        htmlLink: e.htmlLink,
+                        hangoutLink: e.hangoutLink
+                    })),
+                    period: { start: timeMin, end: timeMax }
+                }
+            }
+        };
+    } catch (error) {
+        this.logger.error(`Error al obtener mis eventos agendados para integración ${integrationId} y usuario ${requestingUserId}:`, error);
+        const appError = toAppError(error);
+        return { status: appError.statusCode, jsonBody: { success: false, error: appError.message, details: appError.details } };
+    }
+  }
+  
   async listCalendars(integrationId: string, userId: string): Promise<HttpResponseInit> {
     let config: IntegrationGoogleCalendarConfig | null = null;
     try {
-        // 1. Verificar integración y acceso del USUARIO
         const integration = await this.fetchIntegration(integrationId);
         if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
-        const hasAccess = await this.verifyAccess(integration.agentId, userId); // VERIFICAR ACCESO DEL USUARIO
-        if (!hasAccess) return { status: 403, jsonBody: { error: "No tienes permiso para acceder a esta integración" } };
+        const hasAdminAccess = await this.verifyOwnerOrAdminAccess(integration.agentId, userId);
+        if (!hasAdminAccess) return { status: 403, jsonBody: { error: "No tienes permiso para listar los calendarios de esta integración." } };
+        
         if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') {
             return { status: 400, jsonBody: { error: "La integración no es de Google Calendar" } };
         }
@@ -511,27 +668,23 @@ export class GoogleCalendarHandler {
         }
         config = integration.config as IntegrationGoogleCalendarConfig;
 
-        // 2. Refrescar token si es necesario
         if (config.expiresAt < Date.now()) {
             const refreshResult = await this.refreshToken(integration);
-            if (!refreshResult.success) return { status: 401, jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error } };
-            if (refreshResult.accessToken) config.accessToken = refreshResult.accessToken;
-            if (refreshResult.expiresAt) config.expiresAt = refreshResult.expiresAt;
+            if (!refreshResult.success || !refreshResult.accessToken || !refreshResult.expiresAt) return { status: 401, jsonBody: { error: "Error al actualizar token de acceso", details: refreshResult.error } };
+            config.accessToken = refreshResult.accessToken;
+            config.expiresAt = refreshResult.expiresAt;
         }
 
-        // 3. Crear cliente y API de Calendar
         const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
-        oauth2Client.setCredentials({ access_token: config.accessToken });
+        oauth2Client.setCredentials({ access_token: config.accessToken, refresh_token: config.refreshToken });
         const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
-        // 4. Obtener lista de calendarios
         const calendarResponse = await calendar.calendarList.list();
         const calendars = calendarResponse.data.items || [];
 
-        // 5. Formatear y devolver
         const formattedCalendars = calendars.map(cal => ({
             id: cal.id, summary: cal.summary, description: cal.description,
-            primary: cal.primary || false, accessRole: cal.accessRole
+            primary: cal.primary || false, accessRole: cal.accessRole, timeZone: cal.timeZone
         }));
         return {
             status: 200,
@@ -546,23 +699,23 @@ export class GoogleCalendarHandler {
     }
   }
 
-  /**
-   * Obtiene los detalles de una integración (sin credenciales sensibles).
-   * Requiere verificación de acceso del usuario a la integración.
-   */
   async getIntegration(integrationId: string, userId: string): Promise<HttpResponseInit> {
     try {
       const integration = await this.fetchIntegration(integrationId);
       if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
-      const hasAccess = await this.verifyAccess(integration.agentId, userId); // VERIFICAR ACCESO DEL USUARIO
-      if (!hasAccess) return { status: 403, jsonBody: { error: "No tienes permiso para acceder a esta integración" } };
+      const hasAccess = await this.verifyOwnerOrAdminAccess(integration.agentId, userId);
+      if (!hasAccess) return { status: 403, jsonBody: { error: "No tienes permiso para acceder a esta integración." } };
 
       const { credentials, config: rawConfig, ...safeIntegration } = integration;
-      const config = rawConfig as IntegrationGoogleCalendarConfig; // Asumir parseado
+      const config = rawConfig as IntegrationGoogleCalendarConfig; 
 
       const sanitizedConfig = {
-        calendarId: config.calendarId, scope: config.scope, expiresAt: config.expiresAt,
-        hasRefreshToken: !!config.refreshToken
+        calendarId: config.calendarId, 
+        scope: config.scope, 
+        expiresAt: config.expiresAt,
+        timezone: config.timezone,
+        maxConcurrentAppointments: config.maxConcurrentAppointments,
+        hasRefreshToken: !!config.refreshToken 
       };
 
       return { status: 200, jsonBody: { ...safeIntegration, config: sanitizedConfig } };
@@ -573,15 +726,11 @@ export class GoogleCalendarHandler {
     }
   }
 
-  /**
-   * Crea una nueva integración manualmente (útil si los tokens se obtienen externamente).
-   * Requiere verificación de acceso del usuario al agente.
-   */
   async createIntegration(data: any, userId: string): Promise<HttpResponseInit> {
      try {
-         const { agentId, name, description, accessToken, refreshToken, expiresAt, calendarId, scope } = data;
+         const { agentId, name, description, accessToken, refreshToken, expiresAt, calendarId, scope, maxConcurrentAppointments } = data;
 
-         const hasAccess = await this.verifyAccess(agentId, userId); // VERIFICAR ACCESO DEL USUARIO
+         const hasAccess = await this.verifyAccess(agentId, userId); 
          if (!hasAccess) return { status: 403, jsonBody: { error: "No tienes permiso para modificar este agente" } };
          if (!accessToken) return { status: 400, jsonBody: { error: "Se requiere token de acceso" } };
 
@@ -589,7 +738,8 @@ export class GoogleCalendarHandler {
          const now = Date.now();
          const config: IntegrationGoogleCalendarConfig = {
              accessToken, refreshToken: refreshToken || '', expiresAt: expiresAt || (now + 3600000),
-             scope: scope || 'https://www.googleapis.com/auth/calendar', calendarId: calendarId || 'primary'
+             scope: scope || 'https://www.googleapis.com/auth/calendar', calendarId: calendarId || 'primary',
+             maxConcurrentAppointments: maxConcurrentAppointments ?? GOOGLE_CALENDAR_CONFIG.DEFAULT_MAX_CONCURRENT_APPOINTMENTS
          };
          const integration: Integration = {
              id: integrationId, agentId, name: name || "Google Calendar",
@@ -601,8 +751,8 @@ export class GoogleCalendarHandler {
          const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
          await tableClient.createEntity({ partitionKey: agentId, rowKey: integrationId, ...integration });
 
-         const { credentials: _, ...safeIntegration } = integration; // Excluir credenciales
-         return { status: 201, jsonBody: { ...safeIntegration, config, message: "Integración creada con éxito" } }; // Devolver config parseado
+         const { credentials: _, ...safeIntegration } = integration; 
+         return { status: 201, jsonBody: { ...safeIntegration, config, message: "Integración creada con éxito" } }; 
      } catch (error) {
          this.logger.error("Error al crear integración de Google Calendar:", error);
          const appError = toAppError(error);
@@ -610,96 +760,115 @@ export class GoogleCalendarHandler {
      }
   }
 
-  /**
-   * Actualiza la configuración de una integración existente.
-   * Requiere verificación de acceso del usuario a la integración.
-   */
   async updateIntegration(integrationId: string, data: any, userId: string): Promise<HttpResponseInit> {
-     try {
-         const integration = await this.fetchIntegration(integrationId);
-         if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
-         const hasAccess = await this.verifyAccess(integration.agentId, userId); // VERIFICAR ACCESO DEL USUARIO
-         if (!hasAccess) return { status: 403, jsonBody: { error: "No tienes permiso para modificar esta integración" } };
-         if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') {
-             return { status: 400, jsonBody: { error: "La integración no es de Google Calendar" } };
-         }
+    try {
+        const integration = await this.fetchIntegration(integrationId);
+        if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
+        const hasAccess = await this.verifyOwnerOrAdminAccess(integration.agentId, userId);
+        if (!hasAccess) return { status: 403, jsonBody: { error: "No tienes permiso para modificar esta integración." } };
+        
+        if (integration.type !== IntegrationType.CALENDAR || integration.provider !== 'google') {
+            return { status: 400, jsonBody: { error: "Esta operación solo es válida para integraciones de Google Calendar." } };
+        }
 
-         const config = integration.config as IntegrationGoogleCalendarConfig; // Asumir parseado
-         const updatedConfig: IntegrationGoogleCalendarConfig = { ...config };
-         let needsSave = false;
+        const config = integration.config as IntegrationGoogleCalendarConfig;
+        const updatedConfig: IntegrationGoogleCalendarConfig = { ...config };
+        let configChanged = false;
 
-         // Actualizar campos permitidos
-         if (data.calendarId !== undefined && data.calendarId !== config.calendarId) {
-             updatedConfig.calendarId = data.calendarId;
-             needsSave = true;
-         }
-         // Podrías permitir actualizar otros campos de config si fuera necesario
+        if (data.config?.calendarId !== undefined && data.config.calendarId !== updatedConfig.calendarId) {
+            updatedConfig.calendarId = data.config.calendarId;
+            configChanged = true;
+        }
+        if (data.config?.timezone !== undefined && data.config.timezone !== updatedConfig.timezone) {
+            updatedConfig.timezone = data.config.timezone;
+            configChanged = true;
+        }
+        if (data.config?.maxConcurrentAppointments !== undefined) {
+            const newMax = Number(data.config.maxConcurrentAppointments);
+            if (!isNaN(newMax) && newMax >= 0 && newMax !== updatedConfig.maxConcurrentAppointments) {
+                updatedConfig.maxConcurrentAppointments = newMax;
+                configChanged = true;
+            }
+        }
+        // Si se proveen nuevos tokens, actualizarlos (normalmente por re-autenticación)
+        if (data.config?.accessToken) {
+            updatedConfig.accessToken = data.config.accessToken;
+            updatedConfig.expiresAt = data.config.expiresAt || (Date.now() + 3599 * 1000);
+            if (data.config.refreshToken) updatedConfig.refreshToken = data.config.refreshToken;
+            configChanged = true; 
+        }
 
-         const updateData: any = { partitionKey: integration.agentId, rowKey: integrationId, updatedAt: Date.now() };
-         if (data.name !== undefined && data.name !== integration.name) { updateData.name = data.name; needsSave = true; }
-         if (data.description !== undefined && data.description !== integration.description) { updateData.description = data.description; needsSave = true; }
-         if (data.status !== undefined && data.status !== integration.status) { updateData.status = data.status; needsSave = true; }
-         if (needsSave) { updateData.config = JSON.stringify(updatedConfig); } // Guardar config si cambió
 
-         if (!needsSave && !updateData.name && !updateData.description && !updateData.status) {
-              return { status: 200, jsonBody: { message: "No se realizaron cambios." } }; // No hay nada que actualizar
-         }
+        const updatePayload: any = { partitionKey: integration.agentId, rowKey: integrationId, updatedAt: Date.now() };
+        if (data.name !== undefined && data.name !== integration.name) updatePayload.name = data.name;
+        if (data.description !== undefined && data.description !== integration.description) updatePayload.description = data.description;
+        if (data.status !== undefined && data.status !== integration.status) updatePayload.status = data.status;
+        if (data.isActive !== undefined && data.isActive !== integration.isActive) updatePayload.isActive = data.isActive;
+        
+        if (configChanged) {
+            updatePayload.config = JSON.stringify(updatedConfig);
+             // Actualizar credentials si el token cambió
+             if (data.config?.accessToken) {
+                updatePayload.credentials = updatedConfig.refreshToken || updatedConfig.accessToken;
+            }
+        }
+        
+        if (Object.keys(updatePayload).length <= 3 && !configChanged) { 
+             return {status: 200, jsonBody: { message: "No se realizaron cambios.", id: integrationId }};
+        }
 
-         const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
-         await tableClient.updateEntity(updateData, "Merge");
+        const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
+        await tableClient.updateEntity(updatePayload, "Merge");
 
-         // Devolver la integración actualizada (sin credenciales)
-         const finalIntegration = { ...integration, ...updateData, config: updatedConfig };
-         const { credentials: _, ...safeIntegration } = finalIntegration;
-         const sanitizedConfig = { calendarId: updatedConfig.calendarId, scope: updatedConfig.scope, expiresAt: updatedConfig.expiresAt, hasRefreshToken: !!updatedConfig.refreshToken };
+        const finalIntegration = await this.fetchIntegration(integrationId); 
+        if (!finalIntegration) throw new Error("Error al re-obtener la integración actualizada.");
+        
+        // Devolver la config parseada y sin tokens sensibles
+        const { credentials: _, config: rawFinalConfig, ...safeFinalIntegration } = finalIntegration;
+        const finalConfigObject = rawFinalConfig as IntegrationGoogleCalendarConfig;
+        const sanitizedFinalConfig = {
+            calendarId: finalConfigObject.calendarId, 
+            scope: finalConfigObject.scope, 
+            expiresAt: finalConfigObject.expiresAt,
+            timezone: finalConfigObject.timezone,
+            maxConcurrentAppointments: finalConfigObject.maxConcurrentAppointments,
+            hasRefreshToken: !!finalConfigObject.refreshToken
+        };
 
-         return { status: 200, jsonBody: { ...safeIntegration, config: sanitizedConfig, message: "Integración actualizada" } };
-     } catch (error) {
-         this.logger.error(`Error al actualizar integración Google Calendar ${integrationId}:`, error);
-         const appError = toAppError(error);
-         return { status: appError.statusCode, jsonBody: { error: appError.message, details: appError.details } };
-     }
-  }
+        return { status: 200, jsonBody: { ...safeFinalIntegration, config: sanitizedFinalConfig, message: "Integración de Google Calendar actualizada." } };
+    } catch (error) {
+        this.logger.error(`Error al actualizar integración Google Calendar ${integrationId}:`, error);
+        const appError = toAppError(error);
+        return { status: appError.statusCode, jsonBody: { error: appError.message, details: appError.details } };
+    }
+ }
 
-  /**
-   * Desactiva (eliminación lógica) una integración.
-   * Requiere verificación de acceso del usuario a la integración.
-   */
   async deleteIntegration(integrationId: string, userId: string): Promise<HttpResponseInit> {
-     try {
-         const integration = await this.fetchIntegration(integrationId);
-         if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
-         const hasAccess = await this.verifyAccess(integration.agentId, userId); // VERIFICAR ACCESO DEL USUARIO
-         if (!hasAccess) return { status: 403, jsonBody: { error: "No tienes permiso para eliminar esta integración" } };
+    try {
+        const integration = await this.fetchIntegration(integrationId);
+        if (!integration) return { status: 404, jsonBody: { error: "Integración no encontrada" } };
+        const hasAccess = await this.verifyOwnerOrAdminAccess(integration.agentId, userId);
+        if (!hasAccess) return { status: 403, jsonBody: { error: "No tienes permiso para eliminar esta integración." } };
 
-         // Desactivar
-         const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
-         await tableClient.updateEntity({
-             partitionKey: integration.agentId, rowKey: integrationId,
-             isActive: false, status: IntegrationStatus.PENDING, // Cambiar estado a pendiente/inactivo
-             updatedAt: Date.now()
-         }, "Merge");
+        const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
+        await tableClient.updateEntity({
+            partitionKey: integration.agentId, rowKey: integrationId,
+            isActive: false, status: IntegrationStatus.PENDING, // O EXPIRED
+            updatedAt: Date.now()
+        }, "Merge");
 
-         // Revocar tokens (mejor esfuerzo)
-         const config = integration.config as IntegrationGoogleCalendarConfig;
-         if (config.accessToken) await this.revokeToken(config.accessToken);
-         if (config.refreshToken) await this.revokeToken(config.refreshToken); // También revocar refresh token
+        const config = integration.config as IntegrationGoogleCalendarConfig;
+        if (config.accessToken) await this.revokeToken(config.accessToken);
+        if (config.refreshToken) await this.revokeToken(config.refreshToken);
 
-         return { status: 200, jsonBody: { id: integrationId, message: "Integración eliminada (desactivada) con éxito" } };
-     } catch (error) {
-         this.logger.error(`Error al eliminar integración Google Calendar ${integrationId}:`, error);
-         const appError = toAppError(error);
-         return { status: appError.statusCode, jsonBody: { error: appError.message, details: appError.details } };
-     }
-  }
+        return { status: 200, jsonBody: { id: integrationId, message: "Integración de Google Calendar eliminada (desactivada y tokens revocados)." } };
+    } catch (error) {
+        this.logger.error(`Error al eliminar integración Google Calendar ${integrationId}:`, error);
+        const appError = toAppError(error);
+        return { status: appError.statusCode, jsonBody: { error: appError.message, details: appError.details } };
+    }
+ }
 
-
-  // --- Métodos privados auxiliares ---
-
-  /**
-   * Refresca el token de acceso usando el refresh token.
-   * Actualiza la entidad en Table Storage con los nuevos tokens.
-   */
   private async refreshToken(integration: Integration): Promise<{
     success: boolean;
     accessToken?: string;
@@ -707,96 +876,74 @@ export class GoogleCalendarHandler {
     error?: string;
   }> {
     try {
-      const config = integration.config as IntegrationGoogleCalendarConfig; // Asumir que ya está parseado
+      const config = integration.config as IntegrationGoogleCalendarConfig; 
       if (!config.refreshToken) {
-        this.logger.error(`No hay refresh token para la integración ${integration.id}. Requiere re-autenticación.`);
-        // Actualizar estado a EXPIRADO o ERROR
+        this.logger.error(`No hay refresh token para ${integration.id}. Requiere re-autenticación.`);
         await this.updateIntegrationStatus(integration.id, integration.agentId, IntegrationStatus.EXPIRED);
-        return { success: false, error: "No hay refresh token disponible. Requiere re-autenticación." };
+        return { success: false, error: "No hay refresh token. Requiere re-autenticación." };
       }
 
       const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
       oauth2Client.setCredentials({ refresh_token: config.refreshToken });
 
-      this.logger.info(`Refrescando token para integración ${integration.id}...`);
       const { credentials } = await oauth2Client.refreshAccessToken();
-      this.logger.info(`Token refrescado exitosamente para integración ${integration.id}.`);
-
-      if (!credentials.access_token) {
-        throw new Error("No se pudo obtener nuevo token de acceso al refrescar.");
-      }
+      if (!credentials.access_token) throw new Error("No se obtuvo nuevo access_token.");
 
       const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
       const updatedConfig: IntegrationGoogleCalendarConfig = {
         ...config,
         accessToken: credentials.access_token,
-        expiresAt: credentials.expiry_date || (Date.now() + 3600000), // Usar expiry_date si existe
-        // Google a veces devuelve un nuevo refresh token, otras no. Preservar el antiguo si no viene uno nuevo.
-        refreshToken: credentials.refresh_token || config.refreshToken
+        expiresAt: credentials.expiry_date || (Date.now() + 3599 * 1000),
+        refreshToken: credentials.refresh_token || config.refreshToken 
       };
 
-      // Guardar la configuración actualizada (¡como JSON string!) y las nuevas credenciales
       await tableClient.updateEntity({
-        partitionKey: integration.agentId,
-        rowKey: integration.id,
-        config: JSON.stringify(updatedConfig), // Convertir a JSON string
-        updatedAt: Date.now(),
-        credentials: updatedConfig.refreshToken || updatedConfig.accessToken, // Actualizar credenciales guardadas
-        status: IntegrationStatus.ACTIVE // Asegurar que el estado vuelva a ser activo
+        partitionKey: integration.agentId, rowKey: integration.id,
+        config: JSON.stringify(updatedConfig), updatedAt: Date.now(),
+        credentials: updatedConfig.refreshToken || updatedConfig.accessToken,
+        status: IntegrationStatus.ACTIVE
       }, "Merge");
 
       this.logger.info(`Token actualizado y guardado para integración ${integration.id}`);
-      return {
-        success: true,
-        accessToken: credentials.access_token,
-        expiresAt: updatedConfig.expiresAt
-      };
+      // Actualizar el objeto 'integration' en memoria para que el caller lo use si es necesario
+      (integration.config as IntegrationGoogleCalendarConfig).accessToken = updatedConfig.accessToken;
+      (integration.config as IntegrationGoogleCalendarConfig).expiresAt = updatedConfig.expiresAt;
+      if (credentials.refresh_token) {
+          (integration.config as IntegrationGoogleCalendarConfig).refreshToken = credentials.refresh_token;
+      }
+
+      return { success: true, accessToken: credentials.access_token, expiresAt: updatedConfig.expiresAt };
     } catch (error: any) {
       this.logger.error(`Error al actualizar token para integración ${integration.id}:`, error);
-      // Si el error es 'invalid_grant', el refresh token es inválido o revocado.
       if (error.response?.data?.error === 'invalid_grant') {
-          this.logger.error(`Refresh token inválido para integración ${integration.id}. Requiere re-autenticación.`);
           await this.updateIntegrationStatus(integration.id, integration.agentId, IntegrationStatus.EXPIRED);
           return { success: false, error: "Token de refresco inválido. Requiere re-autenticación." };
       }
-      // Otros errores
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      await this.updateIntegrationStatus(integration.id, integration.agentId, IntegrationStatus.ERROR); // Marcar como error
-      return { success: false, error: errorMessage };
+      await this.updateIntegrationStatus(integration.id, integration.agentId, IntegrationStatus.ERROR);
+      return { success: false, error: toAppError(error).message };
     }
   }
 
-  /**
-   * Busca una integración por su ID y parsea la configuración JSON.
-   */
   private async fetchIntegration(integrationId: string): Promise<Integration | null> {
-      try {
-        const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
-        const integrations = tableClient.listEntities({
-          queryOptions: { filter: `RowKey eq '${integrationId}'` }
-        });
-        for await (const integration of integrations) {
-           if (typeof integration.config === 'string') {
-               try { integration.config = JSON.parse(integration.config); }
-               catch (e) {
-                   this.logger.warn(`Error parseando config JSON para integración ${integrationId}`, e);
-                   integration.config = {};
-               }
-           } else if (integration.config === null || integration.config === undefined) {
-                integration.config = {};
-           }
-          return integration as unknown as Integration;
-        }
-        return null;
-      } catch (error) {
-        this.logger.error(`Error al buscar integración ${integrationId}:`, error);
-        return null;
+    try {
+      const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
+      const integrations = tableClient.listEntities({
+        queryOptions: { filter: `RowKey eq '${integrationId}'` }
+      });
+      for await (const entity of integrations) {
+         if (typeof entity.config === 'string') {
+             try { entity.config = JSON.parse(entity.config); }
+             catch (e) { this.logger.warn(`Error parseando config JSON para integración ${integrationId}:`, e); entity.config = {}; }
+         } else if (entity.config === null || entity.config === undefined) { entity.config = {}; }
+        return entity as unknown as Integration;
       }
+      return null;
+    } catch (error) {
+      this.logger.error(`Error al buscar integración ${integrationId}:`, error);
+      return null;
     }
+  }
 
-  /**
-   * Verifica si un usuario tiene acceso a un agente (propietario o rol activo).
-   */
   private async verifyAccess(agentId: string, userId: string): Promise<boolean> {
      try {
         const agentsTable = this.storageService.getTableClient(STORAGE_TABLES.AGENTS);
@@ -815,43 +962,63 @@ export class GoogleCalendarHandler {
       }
   }
 
-  /**
-   * Revoca un token de Google (mejor esfuerzo).
-   */
   private async revokeToken(token: string): Promise<void> {
-    if (!token) return; // No hacer nada si no hay token
+    if (!token) return;
     try {
-        const response = await fetch(`https://oauth2.googleapis.com/revoke?token=${token}`, { method: 'POST' });
+        const response = await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, { method: 'POST' });
         if (response.ok) {
-            this.logger.info("Token revocado exitosamente (o ya era inválido).");
+            this.logger.info("Token de Google revocado exitosamente (o ya era inválido).");
         } else {
-            this.logger.warn(`Fallo al revocar token (status ${response.status}): ${await response.text()}`);
+            this.logger.warn(`Fallo al revocar token de Google (status ${response.status}): ${await response.text()}`);
         }
     } catch (error) {
-        this.logger.warn("Error de red al intentar revocar token:", error);
+        this.logger.warn("Error de red al intentar revocar token de Google:", error);
     }
   }
 
-  /**
-   * Actualiza el estado de una integración en Table Storage.
-   */
-   private async updateIntegrationStatus(integrationId: string, agentId: string, status: IntegrationStatus): Promise<void> {
+  private async updateIntegrationStatus(integrationId: string, agentId: string, status: IntegrationStatus): Promise<void> {
     try {
       const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
       await tableClient.updateEntity({
-        partitionKey: agentId,
-        rowKey: integrationId,
-        status,
-        updatedAt: Date.now()
+        partitionKey: agentId, rowKey: integrationId, status, updatedAt: Date.now()
       }, "Merge");
       this.logger.info(`Estado de integración ${integrationId} actualizado a ${status}`);
     } catch (error: any) {
-         // Ignorar 404 si la integración fue eliminada mientras tanto
          if (error.statusCode !== 404) {
             this.logger.error(`Error al actualizar estado de integración ${integrationId}:`, error);
          }
     }
   }
 
-} // Fin de la clase GoogleCalendarHandler
+  private async verifyOwnerOrAdminAccess(agentId: string, userId: string): Promise<boolean> {
+    try {
+        const agentsTable = this.storageService.getTableClient(STORAGE_TABLES.AGENTS);
+        try {
+            const agent = await agentsTable.getEntity('agent', agentId);
+            if (agent.userId === userId) { 
+                 this.logger.debug(`Usuario ${userId} es dueño del agente ${agentId}. Acceso admin concedido.`);
+                 return true;
+            }
+        } catch (error: any) {
+            if (error.statusCode !== 404) this.logger.warn(`Error buscando agente ${agentId} para verificar propiedad de ${userId}:`, error);
+        }
 
+        const rolesTable = this.storageService.getTableClient(STORAGE_TABLES.USER_ROLES);
+        const roles = rolesTable.listEntities({ 
+            queryOptions: { 
+                filter: `agentId eq '${agentId}' and userId eq '${userId}' and role eq '${RoleType.ADMIN}' and isActive eq true` 
+            }
+        });
+        for await (const role of roles) {
+            this.logger.debug(`Usuario ${userId} tiene rol ADMIN en agente ${agentId}. Acceso admin concedido.`);
+            return true; 
+        }
+        
+        this.logger.debug(`Usuario ${userId} no es dueño ni admin del agente ${agentId}.`);
+        return false;
+      } catch (error) {
+        this.logger.error(`Error crítico verificando acceso owner/admin del agente ${agentId} para user ${userId}:`, error);
+        return false;
+      }
+  }
+}

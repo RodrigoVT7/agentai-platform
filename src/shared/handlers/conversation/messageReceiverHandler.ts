@@ -107,23 +107,38 @@ export class MessageReceiverHandler {
 
       // --- Actualizar Timestamp y Encolar ---
       // ... (lógica para actualizar timestamp y encolar como antes)
-       await this.updateConversationTimestamp(conversationToUseId, agentId);
+      await this.updateConversationTimestamp(conversationToUseId!, agentId);
 
-       const queueClient = this.storageService.getQueueClient(STORAGE_QUEUES.CONVERSATION);
-       await queueClient.sendMessage(Buffer.from(JSON.stringify({
-         messageId,
-         conversationId: conversationToUseId,
-         agentId,
-         userId: endUserId // Usar el ID del usuario final para el contexto
-       })).toString('base64'));
+      const queueClient = this.storageService.getQueueClient(STORAGE_QUEUES.CONVERSATION);
+      const queuePayload = {
+        messageId,
+        conversationId: conversationToUseId!,
+        agentId,
+        userId: endUserId // Usar el ID del usuario final para el contexto
+      };
 
-       this.logger.info(`Mensaje ${messageId} (origen: ${sourceChannel}) recibido y encolado para procesamiento`);
+      // MODIFICADO: Log ANTES de encolar
+      this.logger.info(`MessageReceiverHandler: PREPARANDO para encolar en '${STORAGE_QUEUES.CONVERSATION}'. Payload: ${JSON.stringify(queuePayload)}`);
 
+      try {
+        await queueClient.sendMessage(Buffer.from(JSON.stringify(queuePayload)).toString('base64'));
+        // NUEVO LOG: Log DESPUÉS y en caso de ÉXITO
+        this.logger.info(`MessageReceiverHandler: ÉXITO al encolar en '${STORAGE_QUEUES.CONVERSATION}'. MessageId encolado: ${messageId}`);
+      } catch (enqueueError) {
+        // NUEVO LOG: Log en caso de FALLO al encolar
+        this.logger.error(`MessageReceiverHandler: FALLO AL ENCOLAR en '${STORAGE_QUEUES.CONVERSATION}'. MessageId: ${messageId}. Error:`, enqueueError);
+        // CRÍTICO: Re-lanzar el error para que sea visible y la función HTTP falle,
+        // lo que podría permitir a Meta reintentar el webhook.
+        throw createAppError(500, `Fallo al encolar mensaje para procesamiento: ${(enqueueError as Error).message}`, enqueueError);
+      }
+
+      // ESTE LOG ORIGINAL AHORA ES REDUNDANTE SI EL DE "ÉXITO AL ENCOLAR" FUNCIONA, PERO PUEDES DEJARLO SI QUIERES
+      this.logger.info(`MessageReceiverHandler: Mensaje ${messageId} (origen: ${sourceChannel}) procesado y encolado (según lógica previa).`);
 
       // --- Devolver respuesta ---
        return {
         messageId,
-        conversationId: conversationToUseId,
+        conversationId: conversationToUseId!,
         status: MessageStatus.SENT,
         timestamp: newMessage.timestamp
       };

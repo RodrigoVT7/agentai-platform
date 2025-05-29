@@ -49,6 +49,16 @@ import './functions/integrations/GoogleCalendar';
 import './functions/integrations/MicrosoftGraph';
 import './functions/integrations/ERPConnector';
 import './functions/integrations/IntegrationExecutor';
+import './functions/integrations/MetaOAuth'
+import './functions/integrations/ManageWhatsAppTemplates';
+
+// Módulo de Handoff
+import './functions/handoff/HandoffInitiator';
+import './functions/handoff/QueueManager';
+import './functions/handoff/AgentAssignment';
+import './functions/handoff/AgentMessaging';
+import './functions/handoff/HandoffCompletion';
+import './functions/handoff/AgentStatusManager';
 
 // Configuración de la aplicación
 app.setup({
