@@ -36,8 +36,68 @@ export class DocumentSearchHandler {
     }
 
 
+// ACTUALIZACIÓN para src/shared/handlers/knowledge/documentSearchHandler.ts
+
+// AÑADIR este método privado a la clase DocumentSearchHandler:
+
+private sanitizeJsonResponse(content: string): string {
+  if (!content) return content;
+  
+  try {
+    // Remover markdown code blocks
+    let cleaned = content.replace(/```json\s*/g, '').replace(/```\s*$/g, '');
+    
+    // Remover backticks sueltos
+    cleaned = cleaned.replace(/^`+|`+$/g, '').replace(/`/g, '');
+    
+    // Trim whitespace
+    cleaned = cleaned.trim();
+    
+    // Buscar el JSON válido dentro del contenido
+    const jsonStart = Math.max(cleaned.indexOf('{'), cleaned.indexOf('['));
+    const jsonEndBrace = cleaned.lastIndexOf('}');
+    const jsonEndBracket = cleaned.lastIndexOf(']');
+    const jsonEnd = Math.max(jsonEndBrace, jsonEndBracket);
+    
+    if (jsonStart > -1 && jsonEnd > jsonStart) {
+      cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
+    }
+    
+    return cleaned;
+  } catch (error) {
+    this.logger.warn('Error sanitizando respuesta JSON:', error);
+    return content;
+  }
+}
+
+// REEMPLAZAR el método understandQuery con esta versión mejorada:
+
 private async understandQuery(query: string): Promise<QueryUnderstanding> {
   try {
+    // 🔥 NUEVO: FILTRO TEMPRANO PARA CONFIRMACIONES
+    const queryTrimmed = query.trim();
+    
+    // Patrones que NO deben analizarse con OpenAI
+    const skipAnalysisPatterns = [
+      /^(si|sí|no|ok|okay|dale|perfecto|correcto|adelante|cambiala|modificala)$/i,
+      /^(yes|no|change it|modify it|cancel it|delete it)$/i,
+      /^[a-zA-Z\s]{1,5}$/,  // Muy cortos
+      /^(👍|👎|✅|❌)$/
+    ];
+    
+    const shouldSkipAnalysis = skipAnalysisPatterns.some(pattern => pattern.test(queryTrimmed));
+    
+    if (shouldSkipAnalysis) {
+      this.logger.info(`🚫 Saltando análisis OpenAI para confirmación: "${queryTrimmed}"`);
+      return this.getFallbackAnalysis(query);
+    }
+    
+    // También saltar si es muy corto
+    if (queryTrimmed.length < 4) {
+      this.logger.info(`🚫 Saltando análisis OpenAI para query muy corta: "${queryTrimmed}"`);
+      return this.getFallbackAnalysis(query);
+    }
+
     // Usar OpenAI para análisis inteligente de la query
     const analysisPrompt = `Analiza esta consulta del usuario y determina sus características:
 
@@ -73,14 +133,31 @@ CRITERIOS:
     ], [], 0.1); // Temperatura baja para consistencia
 
     if (!response.content) {
+      this.logger.warn(`OpenAI devolvió contenido vacío para query "${query}"`);
       return this.getFallbackAnalysis(query);
     }
 
-    // Parsear respuesta JSON
-    const analysis: EnhancedQueryAnalysis = JSON.parse(response.content);
+    // 🔥 SANITIZAR RESPUESTA ANTES DE PARSEAR
+    const sanitizedContent = this.sanitizeJsonResponse(response.content);
     
-    // Convertir a formato QueryUnderstanding existente
-    return this.convertToQueryUnderstanding(analysis, query);
+    if (!sanitizedContent) {
+      this.logger.warn(`Contenido sanitizado vacío para query "${query}"`);
+      return this.getFallbackAnalysis(query);
+    }
+
+    try {
+      // Parsear respuesta JSON sanitizada
+      const analysis: EnhancedQueryAnalysis = JSON.parse(sanitizedContent);
+      
+      // Convertir a formato QueryUnderstanding existente
+      return this.convertToQueryUnderstanding(analysis, query);
+      
+    } catch (parseError) {
+      this.logger.warn(`Error parseando JSON sanitizado de OpenAI para query "${query}":`, parseError);
+      this.logger.debug(`Contenido original: "${response.content}"`);
+      this.logger.debug(`Contenido sanitizado: "${sanitizedContent}"`);
+      return this.getFallbackAnalysis(query);
+    }
 
   } catch (error) {
     this.logger.warn(`Error en análisis OpenAI de query "${query}":`, error);

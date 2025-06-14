@@ -52,8 +52,8 @@ export async function documentSearch(request: HttpRequest, context: InvocationCo
     const agentId = searchParams.agentId as string;
     
     // Obtener parámetros opcionales con valores predeterminados
-    const limit = typeof searchParams.limit === 'number' ? searchParams.limit : 10;
-    const threshold = typeof searchParams.threshold === 'number' ? searchParams.threshold : 0.3;
+    const limit = typeof searchParams.limit === 'number' ? searchParams.limit : 5;
+    const threshold = typeof searchParams.threshold === 'number' ? searchParams.threshold : 0.7;
     const includeContent = searchParams.includeContent !== undefined 
       ? Boolean(searchParams.includeContent) 
       : true;

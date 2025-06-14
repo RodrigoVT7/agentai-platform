@@ -11,12 +11,11 @@ import { WhatsAppIntegrationHandler } from "../integrations/whatsAppIntegrationH
 import { IntegrationWhatsAppConfig, IntegrationStatus as IntegrationAppStatus, Integration } from "../../models/integration.model";
 import { SystemNotificationPurpose, SystemNotificationTemplate } from "../../models/systemNotification.model";
 
-// Interfaz para la configuración de plantilla recuperada de la BD
 interface SystemWhatsAppTemplateDbConfig {
     integrationId: string;
     templateName: string;
     templateLangCode: string;
-    parameterMapping?: Record<string, string>; // El mapeo de {{key}} a "1", "2", etc.
+    parameterMapping?: Record<string, string>;
 }
 
 export class HandoffInitiatorHandler {
@@ -33,7 +32,7 @@ export class HandoffInitiatorHandler {
     private async getAgentAIConfig(agentId: string): Promise<Agent | null> {
         const agentTable = this.storageService.getTableClient(STORAGE_TABLES.AGENTS);
         try {
-            const agentEntity = await agentTable.getEntity('agent', agentId); // Asumiendo 'agent' es PartitionKey
+            const agentEntity = await agentTable.getEntity('agent', agentId);
             const agentConfig = agentEntity as unknown as Agent;
 
             if (agentConfig.handoffConfig && typeof agentConfig.handoffConfig === 'string') {
@@ -41,15 +40,13 @@ export class HandoffInitiatorHandler {
                     agentConfig.handoffConfig = JSON.parse(agentConfig.handoffConfig);
                 } catch (e) {
                     this.logger.error(`Error al parsear handoffConfig para agente ${agentId}: ${e}`);
-                    // Asignar un default o manejar el error como prefieras
                     agentConfig.handoffConfig = JSON.stringify({ type: HandoffMethod.PLATFORM, notificationTargets: [] });
                 }
             } else if (!agentConfig.handoffConfig) {
-                 agentConfig.handoffConfig = JSON.stringify({ type: HandoffMethod.PLATFORM, notificationTargets: [] });
+                agentConfig.handoffConfig = JSON.stringify({ type: HandoffMethod.PLATFORM, notificationTargets: [] });
             }
-            // Asegurarse de que organizationName exista
-            agentConfig.organizationName = agentConfig.organizationName || "Organización Desconocida";
 
+            agentConfig.organizationName = agentConfig.organizationName || "Organización Desconocida";
             return agentConfig;
         } catch (e: any) {
             if (e.statusCode === 404) {
@@ -98,7 +95,7 @@ export class HandoffInitiatorHandler {
         if (conversation.metadata?.whatsapp?.from) {
             return conversation.metadata.whatsapp.from;
         }
-        return conversation.userId;
+        return conversation.endUserId || conversation.userId;
     }
 
     private formatWhatsAppLink(clientIdentifier: string): string {
@@ -110,19 +107,124 @@ export class HandoffInitiatorHandler {
         return "N/A (Identificador de cliente no es de WhatsApp)";
     }
 
+    /**
+     * Genera un resumen mejorado de la conversación para el handoff
+     */
+    private async generateConversationSummary(conversationId: string, reason?: string): Promise<string> {
+        try {
+            const messagesTable = this.storageService.getTableClient(STORAGE_TABLES.MESSAGES);
+            const lastMessages: any[] = [];
+            
+            // Obtener más mensajes para un contexto mejor
+            const messageEntities = messagesTable.listEntities({
+                queryOptions: { filter: `PartitionKey eq '${conversationId}'` }
+            });
+            
+            for await (const msgEntity of messageEntities) { 
+                lastMessages.push(msgEntity); 
+            }
+
+            // Ordenar por timestamp y tomar los últimos 8 mensajes
+            lastMessages.sort((a, b) => (a.timestamp as number) - (b.timestamp as number));
+            const recentMessages = lastMessages.slice(-8);
+
+            if (recentMessages.length === 0) {
+                return reason || "Solicitud de asistencia de agente humano.";
+            }
+
+            // Construir resumen estructurado
+            let summary = reason ? `**Motivo:** ${reason}\n\n` : '';
+            summary += `**Resumen de la conversación (últimos ${recentMessages.length} mensajes):**\n\n`;
+
+            // Calcular duración de la conversación
+            const firstMessage = recentMessages[0];
+            const lastMessage = recentMessages[recentMessages.length - 1];
+            const durationMinutes = Math.round((lastMessage.timestamp - firstMessage.timestamp) / (1000 * 60));
+            
+            if (durationMinutes > 0) {
+                summary += `⏱️ **Duración:** ${durationMinutes} minutos\n\n`;
+            }
+
+            // Agregar mensajes con formato mejorado
+            recentMessages.forEach((msg, index) => {
+                const timestamp = new Date(msg.timestamp).toLocaleTimeString('es-MX', { 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                });
+                
+                const roleIcon = msg.role === MessageRole.USER ? '👤' : '🤖';
+                const roleName = msg.role === MessageRole.USER ? 'Cliente' : 'Bot';
+                const content = String(msg.content).substring(0, 200);
+                const truncated = String(msg.content).length > 200 ? '...' : '';
+                
+                summary += `${roleIcon} **${roleName}** (${timestamp}): ${content}${truncated}\n\n`;
+            });
+
+            // Detectar patrones en la conversación
+            const userMessages = recentMessages.filter(m => m.role === MessageRole.USER);
+            const botMessages = recentMessages.filter(m => m.role === MessageRole.ASSISTANT);
+            
+            if (userMessages.length > botMessages.length) {
+                summary += `⚠️ **Nota:** El cliente ha enviado más mensajes que respuestas del bot, posible frustración.\n`;
+            }
+
+            // Detectar palabras clave de escalación
+            const escalationKeywords = ['agente', 'humano', 'persona', 'ayuda', 'problema', 'no entiendo', 'malo', 'error'];
+            const hasEscalationKeywords = userMessages.some(msg => 
+                escalationKeywords.some(keyword => 
+                    String(msg.content).toLowerCase().includes(keyword)
+                )
+            );
+            
+            if (hasEscalationKeywords) {
+                summary += `🔍 **Detectado:** El cliente ha solicitado asistencia humana explícitamente.\n`;
+            }
+
+            return summary.trim();
+
+        } catch (summaryError) {
+            this.logger.warn(`No se pudo generar resumen mejorado para conv ${conversationId}:`, summaryError);
+            return reason || "Solicitud de asistencia de agente humano.";
+        }
+    }
+
+    /**
+     * Genera el enlace a la plataforma con información contextual
+     */
+    private generatePlatformLink(handoffId: string, conversation: Conversation): string {
+        const baseUrl = process.env.HANDOFF_PLATFORM_URL_BASE || 'https://platform.example.com';
+        
+        // Incluir parámetros útiles para el agente humano
+        const params = new URLSearchParams({
+            handoffId: handoffId,
+            conversationId: conversation.id,
+            agentId: conversation.agentId,
+            channel: conversation.sourceChannel,
+            userId: conversation.endUserId || conversation.userId
+        });
+
+        return `${baseUrl}/manage/handoff/${handoffId}?${params.toString()}`;
+    }
+
     async execute(data: HandoffInitiateRequest, requestorId: string): Promise<any> {
         const { conversationId, agentId, reason, initiatedBy } = data;
 
         let agentAIConfigEntity: Agent | null = null;
         let conversation: Conversation | null = null;
-        let handoffId = uuidv4(); // Generar ID aquí para usarlo en logs si falla antes de crear entidad
+        let handoffId = uuidv4();
 
         try {
+            // 1. Validar agente AI
             agentAIConfigEntity = await this.getAgentAIConfig(agentId);
             if (!agentAIConfigEntity) {
                 throw createAppError(404, `Agente AI con ID ${agentId} no encontrado.`);
             }
 
+            if (!agentAIConfigEntity.handoffEnabled) {
+                throw createAppError(400, "El handoff no está habilitado para este agente AI.");
+            }
+
+            // 2. Parsear configuración de handoff
             let agentHandoffSettings: AgentHandoffConfig;
             if (agentAIConfigEntity.handoffConfig && typeof agentAIConfigEntity.handoffConfig === 'string') {
                 try {
@@ -133,274 +235,361 @@ export class HandoffInitiatorHandler {
                     }
                     agentHandoffSettings.notificationTargets = Array.isArray(agentHandoffSettings.notificationTargets) ? agentHandoffSettings.notificationTargets : [];
                 } catch (e) {
-                    this.logger.error(`Error parseando handoffConfig JSON para Agente AI ${agentId}: ${e}. handoffConfig original: "${agentAIConfigEntity.handoffConfig}"`);
+                    this.logger.error(`Error parseando handoffConfig JSON para Agente AI ${agentId}: ${e}`);
                     agentHandoffSettings = { type: HandoffMethod.PLATFORM, notificationTargets: [] };
                 }
             } else {
-                this.logger.warn(`handoffConfig ausente o no es string para Agente AI ${agentId}. Usando default PLATFORM.`);
                 agentHandoffSettings = { type: HandoffMethod.PLATFORM, notificationTargets: [] };
             }
 
-            // Asegurar que organizationName exista
-            agentAIConfigEntity.organizationName = agentAIConfigEntity.organizationName || "Organización Desconocida"; //
-
-            if (!agentAIConfigEntity.handoffEnabled) {
-                throw createAppError(400, "El handoff no está habilitado para este agente AI.");
-            }
-
+            // 3. Validar conversación
             const conversationTable = this.storageService.getTableClient(STORAGE_TABLES.CONVERSATIONS);
             try {
                 const convEntity = await conversationTable.getEntity(agentId, conversationId);
-                if ((convEntity.status as ConversationStatus) !== ConversationStatus.ACTIVE) { //
+                if ((convEntity.status as ConversationStatus) !== ConversationStatus.ACTIVE) {
                     throw createAppError(400, `La conversación ${conversationId} no está activa (estado: ${convEntity.status}).`);
                 }
                 conversation = convEntity as unknown as Conversation;
+                
+                // Parsear metadata si es string
                 if (conversation.metadata && typeof conversation.metadata === 'string') {
-                    try { conversation.metadata = JSON.parse(conversation.metadata); }
-                    catch (e) { this.logger.warn(`Error parseando metadata de conv ${conversationId}: ${e}`); conversation.metadata = {}; }
+                    try { 
+                        conversation.metadata = JSON.parse(conversation.metadata); 
+                    } catch (e) { 
+                        this.logger.warn(`Error parseando metadata de conv ${conversationId}: ${e}`); 
+                        conversation.metadata = {}; 
+                    }
                 } else if (!conversation.metadata) {
                     conversation.metadata = {};
                 }
             } catch (error: any) {
-                if (error.statusCode === 404) throw createAppError(404, `Conversación ${conversationId} no encontrada para agente ${agentId}.`);
+                if (error.statusCode === 404) {
+                    throw createAppError(404, `Conversación ${conversationId} no encontrada para agente ${agentId}.`);
+                }
                 throw error;
             }
 
-           const handoffTable = this.storageService.getTableClient(STORAGE_TABLES.HANDOFFS);
+            // 4. Verificar handoffs existentes
+            const handoffTable = this.storageService.getTableClient(STORAGE_TABLES.HANDOFFS);
             const existingHandoffs = handoffTable.listEntities({
-                queryOptions: { filter: `conversationId eq '${conversationId}' and (status eq '${HandoffStatus.PENDING}' or status eq '${HandoffStatus.ACTIVE}') and isActive eq true` } //
+                queryOptions: { 
+                    filter: `conversationId eq '${conversationId}' and (status eq '${HandoffStatus.PENDING}' or status eq '${HandoffStatus.ACTIVE}') and isActive eq true` 
+                }
             });
             for await (const existing of existingHandoffs) {
                 throw createAppError(409, `Ya existe un handoff ${existing.status} para esta conversación (ID: ${existing.rowKey}).`);
             }
-            let conversationSummary = reason || "Solicitud de asistencia de agente humano."; //
-            try {
-                const messagesTable = this.storageService.getTableClient(STORAGE_TABLES.MESSAGES);
-                const lastMessages: any[] = [];
-                const messageEntities = messagesTable.listEntities({
-                    queryOptions: { filter: `PartitionKey eq '${conversationId}'` }
-                });
-                for await (const msgEntity of messageEntities) { lastMessages.push(msgEntity); }
-                lastMessages.sort((a, b) => (a.timestamp as number) - (b.timestamp as number));
-                const clientName = conversation.metadata?.whatsapp?.fromName || "Cliente";
-                const recentMessagesSummary = lastMessages.slice(-3).map(m => `${m.role === MessageRole.USER ? clientName : (agentAIConfigEntity?.name || 'Bot')}: ${String(m.content).substring(0, 150)}`).join('\n'); //
-                if (recentMessagesSummary) {
-                    conversationSummary = `${reason ? reason + '\n\n' : ''}Últimos mensajes:\n${recentMessagesSummary}`;
-                }
-            } catch (summaryError) {
-                this.logger.warn(`No se pudo generar resumen de últimos mensajes para handoff en conv ${conversationId}:`, summaryError);
-            }
 
+            // 5. Generar resumen mejorado de la conversación
+            const conversationSummary = await this.generateConversationSummary(conversationId, reason);
+
+            // 6. Crear el handoff
             const now = Date.now();
             const notifiedViaValues: string[] = [];
-            const handoffMethodToUse = agentHandoffSettings.type || HandoffMethod.PLATFORM; //
+            const handoffMethodToUse = agentHandoffSettings.type || HandoffMethod.PLATFORM;
 
-             const newHandoff: Handoff = {
+            const newHandoff: Handoff = {
                 id: handoffId,
                 agentId,
                 conversationId,
-                userId: conversation.userId, //
-                status: HandoffStatus.PENDING, //
+                userId: conversation.endUserId || conversation.userId,
+                status: HandoffStatus.PENDING,
                 reason: conversationSummary,
                 initiatedBy: initiatedBy || requestorId,
                 createdAt: now,
                 queuedAt: now,
                 isActive: true,
-                notificationMethod: undefined, // Se actualizará
+                notificationMethod: undefined,
                 notifiedAgents: undefined
             };
 
-            if (handoffMethodToUse === HandoffMethod.PLATFORM || handoffMethodToUse === HandoffMethod.BOTH) { //
-            this.logger.info(`Handoff ${handoffId} marcado para notificación vía plataforma interna.`);
-            notifiedViaValues.push(HandoffMethod.PLATFORM);
-        }
-
-        // NUEVA LÓGICA para usar la integración y plantilla del cliente
-        if (handoffMethodToUse === HandoffMethod.WHATSAPP || handoffMethodToUse === HandoffMethod.BOTH) { //
-            const { clientWhatsAppIntegrationId, clientWhatsAppTemplateName, clientWhatsAppTemplateLangCode, notificationTargets, useSystemFallback } = agentHandoffSettings;
-
-            let clientIntegrationConfig: IntegrationWhatsAppConfig | null = null;
-            let clientAccessToken: string | null = null;
-            let clientPhoneNumberId: string | null = null;
-
-            if (clientWhatsAppIntegrationId) {
-                const integrationsTable = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
-                try {
-                    // Asumimos que PartitionKey es agentId para la tabla Integrations
-                    const integrationEntity = await integrationsTable.getEntity(agentId, clientWhatsAppIntegrationId);
-                    const clientIntegration = integrationEntity as unknown as Integration;
-
-                    if (clientIntegration && clientIntegration.isActive && clientIntegration.provider === "whatsapp" && clientIntegration.status === IntegrationAppStatus.ACTIVE) { //
-                        if (typeof clientIntegration.config === 'string') {
-                            clientIntegrationConfig = JSON.parse(clientIntegration.config) as IntegrationWhatsAppConfig;
-                        } else {
-                            clientIntegrationConfig = clientIntegration.config as IntegrationWhatsAppConfig;
-                        }
-                        clientAccessToken = clientIntegrationConfig.accessToken;
-                        clientPhoneNumberId = clientIntegrationConfig.phoneNumberId;
-                        this.logger.info(`Usando integración de WhatsApp del cliente ${clientWhatsAppIntegrationId} para handoff ${handoffId}.`);
-                    } else {
-                        this.logger.warn(`La integración de WhatsApp del cliente ${clientWhatsAppIntegrationId} no está activa o no es válida.`);
-                    }
-                } catch (err) {
-                    this.logger.error(`Error al obtener la integración de WhatsApp del cliente ${clientWhatsAppIntegrationId}:`, err);
-                }
+            // 7. Procesar notificaciones según el método configurado
+            if (handoffMethodToUse === HandoffMethod.PLATFORM || handoffMethodToUse === HandoffMethod.BOTH) {
+                this.logger.info(`Handoff ${handoffId} marcado para notificación vía plataforma interna.`);
+                notifiedViaValues.push(HandoffMethod.PLATFORM);
             }
 
-            if (clientAccessToken && clientPhoneNumberId && clientWhatsAppTemplateName && clientWhatsAppTemplateLangCode && notificationTargets && notificationTargets.length > 0) {
-                // Usar la integración y plantilla del cliente
-                this.logger.info(`Intentando notificación de handoff vía WhatsApp del CLIENTE: Template '${clientWhatsAppTemplateName}', Lang '${clientWhatsAppTemplateLangCode}'.`);
-                const clientIdentifier = this.extractClientOriginalIdentifier(conversation); //
-                const clientWhatsAppLink = this.formatWhatsAppLink(clientIdentifier); //
-                const clientOwnerName = agentAIConfigEntity.organizationName || "N/A"; //
-                // El platformLink sería a tu plataforma donde el agente humano puede tomar la conversación.
-                const platformLink = `${process.env.HANDOFF_PLATFORM_URL_BASE}/manage/handoff/${handoffId}`;
-
-
-                for (const agentHumanPhoneNumber of notificationTargets) {
-                    const templateParameters = [ // Ajusta estos parámetros según tu plantilla específica
-                        { type: 'text', text: agentAIConfigEntity.name },        // {{1}} Nombre del Agente AI
-                        { type: 'text', text: clientOwnerName },                 // {{2}} Nombre de la Organización del Cliente
-                        { type: 'text', text: handoffId },                       // {{3}} ID del Handoff
-                        { type: 'text', text: clientIdentifier },                // {{4}} Identificador del Usuario Final
-                        { type: 'text', text: String(newHandoff.reason).substring(0, 200) + '...' }, // {{5}} Razón del Handoff (acortada)
-                        { type: 'text', text: clientWhatsAppLink },              // {{6}} Link al chat del Usuario Final
-                        { type: 'text', text: platformLink}                      // {{7}} Link a la plataforma de Handoff
-                    ];
-
-                    const messagePayload = {
-                        integrationId: clientWhatsAppIntegrationId!, // Sabemos que está definido aquí
-                        to: agentHumanPhoneNumber,
-                        type: 'template' as 'template',
-                        template: {
-                            name: clientWhatsAppTemplateName,
-                            language: { code: clientWhatsAppTemplateLangCode },
-                            components: [{ type: 'body', parameters: templateParameters }]
-                        },
-                        internalMessageId: `client-handoff-notif-${handoffId}-${agentHumanPhoneNumber}`
-                    };
-                    try {
-                        // Llamar a sendMessage usando las credenciales del CLIENTE
-                        // WhatsAppIntegrationHandler.sendMessage necesita ser capaz de usar el accessToken y phoneNumberId de la config.
-                        // El 'userId' pasado a sendMessage aquí sería el platformUserId (dueño del agentId) o un ID de sistema.
-                        await this.whatsAppHandler.sendMessage(messagePayload, agentAIConfigEntity.userId); //
-                        this.logger.info(`Notificación de handoff (plantilla CLIENTE) ${handoffId} enviada a ${agentHumanPhoneNumber}.`);
-                    } catch (waError) {
-                        this.logger.error(`Error enviando notificación de handoff (plantilla CLIENTE) a ${agentHumanPhoneNumber}:`, waError);
-                    }
-                }
-                notifiedViaValues.push(`${HandoffMethod.WHATSAPP}-cliente`);
-            } else if (useSystemFallback !== false && notificationTargets && notificationTargets.length > 0) {
-                // Fallback a la notificación de sistema (lógica original)
-                this.logger.info(`Fallback: Usando notificación de handoff vía WhatsApp del SISTEMA para agente ${agentId}.`);
-                const systemNotificationTemplate = await this.getSystemWhatsAppTemplateConfig(SystemNotificationPurpose.HANDOFF_TO_HUMAN_AGENT); //
-                if (systemNotificationTemplate) {
-                    // ... (lógica existente para enviar con plantilla de sistema) ...
-                    // (Asegúrate que esta lógica interna también funcione bien)
-                    const {
-                            integrationId: systemWhatsAppIntegrationId, // Este es el ID de la integración de WA de TU PLATAFORMA
-                            templateName: systemTemplateName,
-                            templateLangCode: systemTemplateLang,
-                            parameterMapping
-                        } = systemNotificationTemplate;
-
-                    const clientIdentifier = this.extractClientOriginalIdentifier(conversation); //
-                    const clientWhatsAppLink = this.formatWhatsAppLink(clientIdentifier); //
-                    const clientOwnerName = agentAIConfigEntity.organizationName || "N/A"; //
-                    const platformLink = `${process.env.HANDOFF_PLATFORM_URL_BASE}/manage/handoff/${handoffId}`;
-
-
-                    for (const agentHumanPhoneNumber of notificationTargets) {
-                        let templateParameters: { type: string, text: string }[] = [];
-                        const paramValues: Record<string, string> = {
-                            agentAIName: agentAIConfigEntity.name,
-                            clientOwnerName: clientOwnerName,
-                            handoffId: handoffId,
-                            clientIdentifier: clientIdentifier,
-                            handoffReason: String(newHandoff.reason).substring(0, 200) + '...',
-                            clientContactLink: clientWhatsAppLink,
-                            platformLink: platformLink
-                        };
-
-                        if (parameterMapping) {
-                            const sortedMappingKeys = Object.keys(parameterMapping).sort((keyA, keyB) => (parameterMapping[keyA] as any) - (parameterMapping[keyB] as any));
-                            for (const key of sortedMappingKeys) {
-                                templateParameters.push({ type: 'text', text: paramValues[key] || '' });
-                            }
-                        } else {
-                            templateParameters = [
-                                { type: 'text', text: paramValues.agentAIName },
-                                { type: 'text', text: paramValues.clientOwnerName },
-                                { type: 'text', text: paramValues.handoffId },
-                                { type: 'text', text: paramValues.clientIdentifier },
-                                { type: 'text', text: paramValues.handoffReason },
-                                { type: 'text', text: paramValues.clientContactLink },
-                                { type: 'text', text: paramValues.platformLink }
-                            ];
-                        }
-
-                        const messagePayloadSys = {
-                            integrationId: systemWhatsAppIntegrationId, // ID de la integración de WA de TU PLATAFORMA
-                            to: agentHumanPhoneNumber,
-                            type: 'template' as 'template',
-                            template: {
-                                name: systemTemplateName,
-                                language: { code: systemTemplateLang },
-                                components: [{ type: 'body', parameters: templateParameters }]
-                            },
-                            internalMessageId: `sys-handoff-notif-${handoffId}-${agentHumanPhoneNumber}`
-                        };
-
-                        try {
-                            await this.whatsAppHandler.sendMessage(messagePayloadSys, agentId); // El 'agentId' del bot que solicita el handoff
-                            this.logger.info(`Notificación de handoff (plantilla SISTEMA) ${handoffId} enviada a ${agentHumanPhoneNumber}.`);
-                        } catch (waErrorSys) {
-                            this.logger.error(`Error enviando notificación de handoff (plantilla SISTEMA) a ${agentHumanPhoneNumber}:`, waErrorSys);
-                        }
-                    }
-                    notifiedViaValues.push(`${HandoffMethod.WHATSAPP}-sistema`);
-                } else {
-                     this.logger.error("Fallback a sistema, pero no se encontró config de plantilla HANDOFF_TO_HUMAN_AGENT.");
-                }
-            } else {
-                this.logger.warn(`Handoff por WhatsApp para Agente AI ${agentId} pero no hay configuración de cliente ni fallback de sistema habilitado, o no hay números de agentes humanos.`);
+            if (handoffMethodToUse === HandoffMethod.WHATSAPP || handoffMethodToUse === HandoffMethod.BOTH) {
+                const notificationResult = await this.processWhatsAppNotifications(
+                    agentHandoffSettings, 
+                    agentAIConfigEntity, 
+                    conversation, 
+                    newHandoff, 
+                    handoffId
+                );
+                notifiedViaValues.push(...notificationResult);
             }
-        }
 
-        newHandoff.notificationMethod = notifiedViaValues.length > 0 ? notifiedViaValues.join(',') : HandoffMethod.PLATFORM;
-        newHandoff.notifiedAgents = (agentHandoffSettings.type === HandoffMethod.WHATSAPP || agentHandoffSettings.type === HandoffMethod.BOTH) && agentHandoffSettings.notificationTargets
-            ? JSON.stringify(agentHandoffSettings.notificationTargets)
-            : undefined;
+            // 8. Finalizar creación del handoff
+            newHandoff.notificationMethod = notifiedViaValues.length > 0 ? notifiedViaValues.join(',') : HandoffMethod.PLATFORM;
+            newHandoff.notifiedAgents = (handoffMethodToUse === HandoffMethod.WHATSAPP || handoffMethodToUse === HandoffMethod.BOTH) && agentHandoffSettings.notificationTargets
+                ? JSON.stringify(agentHandoffSettings.notificationTargets)
+                : undefined;
 
-        await handoffTable.createEntity({
-            partitionKey: agentId,
-            rowKey: handoffId,
-            ...newHandoff
-        });
+            await handoffTable.createEntity({
+                partitionKey: agentId,
+                rowKey: handoffId,
+                ...newHandoff
+            });
 
-        await conversationTable.updateEntity({
-            partitionKey: agentId,
-            rowKey: conversationId,
-            status: ConversationStatus.TRANSFERRED, //
-            updatedAt: now
-        }, "Merge");
+            // 9. Actualizar estado de la conversación
+            await conversationTable.updateEntity({
+                partitionKey: agentId,
+                rowKey: conversationId,
+                status: ConversationStatus.TRANSFERRED,
+                updatedAt: now
+            }, "Merge");
 
-        this.logger.info(`Handoff ${handoffId} iniciado para conversación ${conversationId}. Notificado vía: ${newHandoff.notificationMethod}`);
+            this.logger.info(`Handoff ${handoffId} iniciado para conversación ${conversationId}. Notificado vía: ${newHandoff.notificationMethod}`);
 
-        return {
-            handoffId,
-            conversationId,
-            status: HandoffStatus.PENDING,
-            notificationMethod: newHandoff.notificationMethod,
-            message: "Solicitud de handoff registrada y notificaciones (si aplica) enviadas."
-        };
+            return {
+                handoffId,
+                conversationId,
+                status: HandoffStatus.PENDING,
+                notificationMethod: newHandoff.notificationMethod,
+                message: "Solicitud de handoff registrada y notificaciones enviadas."
+            };
 
         } catch (error: unknown) {
-            this.logger.error(`Error al iniciar handoff para conversación ${conversationId} (Handoff ID tentativo: ${handoffId}):`, error);
+            this.logger.error(`Error al iniciar handoff para conversación ${conversationId}:`, error);
             if (error && typeof error === 'object' && 'statusCode' in error) {
                 throw error;
             }
             throw createAppError(500, 'Error al iniciar handoff');
+        }
+    }
+
+    /**
+     * Procesa las notificaciones de WhatsApp para el handoff
+     */
+    private async processWhatsAppNotifications(
+        agentHandoffSettings: AgentHandoffConfig,
+        agentAIConfigEntity: Agent,
+        conversation: Conversation,
+        newHandoff: Handoff,
+        handoffId: string
+    ): Promise<string[]> {
+        const notifiedViaValues: string[] = [];
+        const { clientWhatsAppIntegrationId, clientWhatsAppTemplateName, clientWhatsAppTemplateLangCode, notificationTargets, useSystemFallback } = agentHandoffSettings;
+
+        let clientIntegrationConfig: IntegrationWhatsAppConfig | null = null;
+        let clientAccessToken: string | null = null;
+        let clientPhoneNumberId: string | null = null;
+
+        // Intentar usar integración del cliente
+        if (clientWhatsAppIntegrationId) {
+            const integrationsTable = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
+            try {
+                const integrationEntity = await integrationsTable.getEntity(agentAIConfigEntity.id, clientWhatsAppIntegrationId);
+                const clientIntegration = integrationEntity as unknown as Integration;
+
+                if (clientIntegration && clientIntegration.isActive && clientIntegration.provider === "whatsapp" && clientIntegration.status === IntegrationAppStatus.ACTIVE) {
+                    if (typeof clientIntegration.config === 'string') {
+                        clientIntegrationConfig = JSON.parse(clientIntegration.config) as IntegrationWhatsAppConfig;
+                    } else {
+                        clientIntegrationConfig = clientIntegration.config as IntegrationWhatsAppConfig;
+                    }
+                    clientAccessToken = clientIntegrationConfig.accessToken;
+                    clientPhoneNumberId = clientIntegrationConfig.phoneNumberId;
+                    this.logger.info(`Usando integración de WhatsApp del cliente ${clientWhatsAppIntegrationId} para handoff ${handoffId}.`);
+                } else {
+                    this.logger.warn(`La integración de WhatsApp del cliente ${clientWhatsAppIntegrationId} no está activa o no es válida.`);
+                }
+            } catch (err) {
+                this.logger.error(`Error al obtener la integración de WhatsApp del cliente ${clientWhatsAppIntegrationId}:`, err);
+            }
+        }
+
+        // Enviar notificaciones usando plantilla del cliente
+        if (clientAccessToken && clientPhoneNumberId && clientWhatsAppTemplateName && clientWhatsAppTemplateLangCode && notificationTargets && notificationTargets.length > 0) {
+            const success = await this.sendClientTemplateNotifications(
+                clientAccessToken,
+                clientPhoneNumberId,
+                clientWhatsAppTemplateName,
+                clientWhatsAppTemplateLangCode,
+                notificationTargets,
+                agentAIConfigEntity,
+                conversation,
+                newHandoff,
+                handoffId
+            );
+            
+            if (success) {
+                notifiedViaValues.push(`${HandoffMethod.WHATSAPP}-cliente`);
+            }
+        } 
+        // Fallback a sistema si está habilitado
+        else if (useSystemFallback !== false && notificationTargets && notificationTargets.length > 0) {
+            const success = await this.sendSystemTemplateNotifications(
+                notificationTargets,
+                agentAIConfigEntity,
+                conversation,
+                newHandoff,
+                handoffId
+            );
+            
+            if (success) {
+                notifiedViaValues.push(`${HandoffMethod.WHATSAPP}-sistema`);
+            }
+        } else {
+            this.logger.warn(`Handoff por WhatsApp para Agente AI ${agentAIConfigEntity.id} pero no hay configuración válida.`);
+        }
+
+        return notifiedViaValues;
+    }
+
+    /**
+     * Envía notificaciones usando plantilla del cliente
+     */
+    private async sendClientTemplateNotifications(
+        clientAccessToken: string,
+        clientPhoneNumberId: string,
+        templateName: string,
+        templateLangCode: string,
+        notificationTargets: string[],
+        agentAIConfigEntity: Agent,
+        conversation: Conversation,
+        newHandoff: Handoff,
+        handoffId: string
+    ): Promise<boolean> {
+        try {
+            this.logger.info(`Enviando notificaciones de handoff usando plantilla del CLIENTE: ${templateName}`);
+            
+            const clientIdentifier = this.extractClientOriginalIdentifier(conversation);
+            const clientWhatsAppLink = this.formatWhatsAppLink(clientIdentifier);
+            const clientOwnerName = agentAIConfigEntity.organizationName || "N/A";
+            const platformLink = this.generatePlatformLink(handoffId, conversation);
+            const clientName = conversation.metadata?.whatsapp?.fromName || clientIdentifier;
+
+            let successCount = 0;
+
+            for (const agentHumanPhoneNumber of notificationTargets) {
+                const templateParameters = [
+                    { type: 'text', text: agentAIConfigEntity.name },        // {{1}} Nombre del Agente AI
+                    { type: 'text', text: clientOwnerName },                 // {{2}} Nombre de la Organización
+                    { type: 'text', text: handoffId },                       // {{3}} ID del Handoff
+                    { type: 'text', text: clientName },                      // {{4}} Nombre del Cliente
+                    { type: 'text', text: String(newHandoff.reason).substring(0, 200) + '...' }, // {{5}} Razón (acortada)
+                    { type: 'text', text: clientWhatsAppLink },              // {{6}} Link al chat del Cliente
+                    { type: 'text', text: platformLink}                      // {{7}} Link a la plataforma
+                ];
+
+                const messagePayload = {
+                    integrationId: clientPhoneNumberId, // Usar directamente el phoneNumberId
+                    to: agentHumanPhoneNumber,
+                    type: 'template' as 'template',
+                    template: {
+                        name: templateName,
+                        language: { code: templateLangCode },
+                        components: [{ type: 'body', parameters: templateParameters }]
+                    },
+                    internalMessageId: `client-handoff-notif-${handoffId}-${agentHumanPhoneNumber}`
+                };
+
+                try {
+                    await this.whatsAppHandler.sendMessage(messagePayload, agentAIConfigEntity.userId);
+                    this.logger.info(`Notificación de handoff (plantilla CLIENTE) ${handoffId} enviada a ${agentHumanPhoneNumber}.`);
+                    successCount++;
+                } catch (waError) {
+                    this.logger.error(`Error enviando notificación de handoff (plantilla CLIENTE) a ${agentHumanPhoneNumber}:`, waError);
+                }
+            }
+
+            return successCount > 0;
+        } catch (error) {
+            this.logger.error(`Error en sendClientTemplateNotifications:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * Envía notificaciones usando plantilla del sistema
+     */
+    private async sendSystemTemplateNotifications(
+        notificationTargets: string[],
+        agentAIConfigEntity: Agent,
+        conversation: Conversation,
+        newHandoff: Handoff,
+        handoffId: string
+    ): Promise<boolean> {
+        try {
+            this.logger.info(`Fallback: Usando notificación de handoff vía WhatsApp del SISTEMA para agente ${agentAIConfigEntity.id}.`);
+            
+            const systemNotificationTemplate = await this.getSystemWhatsAppTemplateConfig(SystemNotificationPurpose.HANDOFF_TO_HUMAN_AGENT);
+            if (!systemNotificationTemplate) {
+                this.logger.error("Fallback a sistema, pero no se encontró config de plantilla HANDOFF_TO_HUMAN_AGENT.");
+                return false;
+            }
+
+            const {
+                integrationId: systemWhatsAppIntegrationId,
+                templateName: systemTemplateName,
+                templateLangCode: systemTemplateLang,
+                parameterMapping
+            } = systemNotificationTemplate;
+
+            const clientIdentifier = this.extractClientOriginalIdentifier(conversation);
+            const clientWhatsAppLink = this.formatWhatsAppLink(clientIdentifier);
+            const clientOwnerName = agentAIConfigEntity.organizationName || "N/A";
+            const platformLink = this.generatePlatformLink(handoffId, conversation);
+            const clientName = conversation.metadata?.whatsapp?.fromName || clientIdentifier;
+
+            let successCount = 0;
+
+            for (const agentHumanPhoneNumber of notificationTargets) {
+                let templateParameters: { type: string, text: string }[] = [];
+                const paramValues: Record<string, string> = {
+                    agentAIName: agentAIConfigEntity.name,
+                    clientOwnerName: clientOwnerName,
+                    handoffId: handoffId,
+                    clientIdentifier: clientName,
+                    handoffReason: String(newHandoff.reason).substring(0, 200) + '...',
+                    clientContactLink: clientWhatsAppLink,
+                    platformLink: platformLink
+                };
+
+                if (parameterMapping) {
+                    const sortedMappingKeys = Object.keys(parameterMapping).sort((keyA, keyB) => (parameterMapping[keyA] as any) - (parameterMapping[keyB] as any));
+                    for (const key of sortedMappingKeys) {
+                        templateParameters.push({ type: 'text', text: paramValues[key] || '' });
+                    }
+                } else {
+                    templateParameters = [
+                        { type: 'text', text: paramValues.agentAIName },
+                        { type: 'text', text: paramValues.clientOwnerName },
+                        { type: 'text', text: paramValues.handoffId },
+                        { type: 'text', text: paramValues.clientIdentifier },
+                        { type: 'text', text: paramValues.handoffReason },
+                        { type: 'text', text: paramValues.clientContactLink },
+                        { type: 'text', text: paramValues.platformLink }
+                    ];
+                }
+
+                const messagePayloadSys = {
+                    integrationId: systemWhatsAppIntegrationId,
+                    to: agentHumanPhoneNumber,
+                    type: 'template' as 'template',
+                    template: {
+                        name: systemTemplateName,
+                        language: { code: systemTemplateLang },
+                        components: [{ type: 'body', parameters: templateParameters }]
+                    },
+                    internalMessageId: `sys-handoff-notif-${handoffId}-${agentHumanPhoneNumber}`
+                };
+
+                try {
+                    await this.whatsAppHandler.sendMessage(messagePayloadSys, agentAIConfigEntity.id);
+                    this.logger.info(`Notificación de handoff (plantilla SISTEMA) ${handoffId} enviada a ${agentHumanPhoneNumber}.`);
+                    successCount++;
+                } catch (waErrorSys) {
+                    this.logger.error(`Error enviando notificación de handoff (plantilla SISTEMA) a ${agentHumanPhoneNumber}:`, waErrorSys);
+                }
+            }
+
+            return successCount > 0;
+        } catch (error) {
+            this.logger.error(`Error en sendSystemTemplateNotifications:`, error);
+            return false;
         }
     }
 }

@@ -73,16 +73,16 @@ export interface Integration {
   ownerUserId?: string; // userId del cliente dueño del Agente AI y, por ende, de esta config.
 }
 
-export interface IntegrationAction { /* ... */ 
-  integrationId: string; 
-  action: string; 
-  parameters: Record<string, any>; 
-  userId: string; 
-  conversationId?: string; 
-  messageId?: string; 
-  async?: boolean; 
-  callbackUrl?: string; 
-  customHandlerParams?: Record<string, any>;
+export interface IntegrationAction {
+  integrationId: string;
+  action: string;
+  parameters: Record<string, any>;
+  userId: string;
+  conversationId: string;
+  messageId: string;
+  async: boolean;
+  agentId?: string; // Nuevo campo
+  callbackUrl?: string;
 }
 
 export interface IntegrationGoogleCalendarConfig { /* ... */ 

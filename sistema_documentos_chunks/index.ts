@@ -53,8 +53,8 @@ export const BLOB_CONTAINERS = {
 };
 
 export const EMBEDDING_CONFIG = {
-  CHUNK_SIZE: 1500,           // Tamaño del chunk en caracteres
-  CHUNK_OVERLAP: 300,         // Solapamiento entre chunks
+  CHUNK_SIZE: 1000,           // Tamaño del chunk en caracteres
+  CHUNK_OVERLAP: 200,         // Solapamiento entre chunks
   MAX_TOKENS_PER_CHUNK: 8000  // Máximo de tokens por chunk
 };
 
