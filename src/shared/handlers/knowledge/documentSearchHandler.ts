@@ -44,29 +44,54 @@ private sanitizeJsonResponse(content: string): string {
   if (!content) return content;
   
   try {
-    // Remover markdown code blocks
-    let cleaned = content.replace(/```json\s*/g, '').replace(/```\s*$/g, '');
+    // Busca el inicio del JSON, ya sea con '{' o '['
+    const jsonStart = content.indexOf('{');
+    const arrayStart = content.indexOf('[');
     
-    // Remover backticks sueltos
-    cleaned = cleaned.replace(/^`+|`+$/g, '').replace(/`/g, '');
-    
-    // Trim whitespace
-    cleaned = cleaned.trim();
-    
-    // Buscar el JSON válido dentro del contenido
-    const jsonStart = Math.max(cleaned.indexOf('{'), cleaned.indexOf('['));
-    const jsonEndBrace = cleaned.lastIndexOf('}');
-    const jsonEndBracket = cleaned.lastIndexOf(']');
-    const jsonEnd = Math.max(jsonEndBrace, jsonEndBracket);
-    
-    if (jsonStart > -1 && jsonEnd > jsonStart) {
-      cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
+    let firstIndex = -1;
+
+    if (jsonStart === -1) {
+      firstIndex = arrayStart;
+    } else if (arrayStart === -1) {
+      firstIndex = jsonStart;
+    } else {
+      firstIndex = Math.min(jsonStart, arrayStart);
     }
     
-    return cleaned;
+    if (firstIndex === -1) {
+      this.logger.warn('No se encontró un inicio de JSON ({ o [) en el contenido.');
+      return ''; // Devuelve vacío si no hay JSON
+    }
+
+    // Busca el final del JSON que corresponde al inicio encontrado
+    const lastBrace = content.lastIndexOf('}');
+    const lastBracket = content.lastIndexOf(']');
+    
+    let lastIndex = -1;
+
+    // Determina el carácter de cierre correcto basado en el de apertura
+    if (content.substring(firstIndex).startsWith('[')) {
+        lastIndex = lastBracket;
+    } else {
+        lastIndex = lastBrace;
+    }
+
+    if (lastIndex === -1 || lastIndex < firstIndex) {
+      this.logger.warn('No se encontró un final de JSON (} o ]) válido después del inicio.');
+      return ''; // Devuelve vacío si el JSON es inválido
+    }
+    
+    // Extrae la subcadena que contiene el JSON
+    const jsonString = content.substring(firstIndex, lastIndex + 1);
+    
+    // Valida que el string extraído es realmente un JSON parseable (lanzará un error si no lo es)
+    JSON.parse(jsonString);
+
+    return jsonString;
+
   } catch (error) {
-    this.logger.warn('Error sanitizando respuesta JSON:', error);
-    return content;
+    this.logger.warn('Error sanitizando o validando la respuesta JSON:', error);
+    return ''; 
   }
 }
 

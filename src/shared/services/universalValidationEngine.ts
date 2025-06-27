@@ -367,6 +367,10 @@ private async validateBusinessRules(
   context?: any
 ): Promise<ValidationResult> {
   
+    if (!rules?.enabled) {
+    return { valid: true };
+  }
+
   const timeZone = rules?.timeZone || 'UTC';
   
   // Validar que existan fechas
@@ -379,10 +383,10 @@ private async validateBusinessRules(
   }
 
   try {
-    const startDate = new Date(params.start.dateTime || params.start.date);
-    const now = new Date();
+   const startDateUTC = new Date(params.start.dateTime || params.start.date);
+    const nowUTC = new Date();
     
-    if (isNaN(startDate.getTime())) {
+     if (isNaN(startDateUTC.getTime())) {
       return {
         valid: false,
         error: "Formato de fecha inválido",
@@ -390,189 +394,147 @@ private async validateBusinessRules(
       };
     }
 
+        // --- CONVERSIÓN A HORA LOCAL DEL AGENTE ---
+    // Usamos Intl.DateTimeFormat para obtener los componentes de la fecha en la zona horaria correcta.
+    const nowInTargetTimeZone = new Date(nowUTC.toLocaleString('en-US', { timeZone }));
+    const startDateInTargetTimeZone = new Date(startDateUTC.toLocaleString('en-US', { timeZone }));
+
+    const hourInTargetTimeZone = startDateInTargetTimeZone.getHours();
+    const dayInTargetTimeZone = startDateInTargetTimeZone.getDay();
+    const minutesInTargetTimeZone = startDateInTargetTimeZone.getMinutes();
+
+
     // 1. VALIDAR ANTICIPACIÓN MÍNIMA
-    if (rules?.minAdvanceHours) {
-      const hoursDiff = (startDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+    if (rules.minAdvanceHours) {
+      const hoursDiff = (startDateUTC.getTime() - nowUTC.getTime()) / 3600000;
       if (hoursDiff < rules.minAdvanceHours) {
-        const minDate = new Date(now.getTime() + rules.minAdvanceHours * 60 * 60 * 1000);
-        return {
-          valid: false,
-          error: `Se requieren al menos ${rules.minAdvanceHours} horas de anticipación`,
-          suggestion: `La fecha más temprana disponible es: ${minDate.toLocaleDateString('es-MX', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long', 
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            timeZone: timeZone
-          })}`
-        };
+        const minDate = new Date(nowUTC.getTime() + rules.minAdvanceHours * 3600000);
+return {
+  valid: false,
+  error: `Se requieren al menos ${rules.minAdvanceHours} horas de anticipación para agendar.`,
+  suggestion: `La fecha más temprana disponible es el ${minDate.toLocaleString('es-MX', { timeZone, dateStyle: 'full', timeStyle: 'short' })}`
+};
       }
     }
 
     // 2. VALIDAR ANTICIPACIÓN MÁXIMA
-    if (rules?.maxAdvanceWeeks) {
-      const weeksDiff = (startDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24 * 7);
+        if (rules.maxAdvanceWeeks) {
+      const weeksDiff = (startDateUTC.getTime() - nowUTC.getTime()) / (1000 * 60 * 60 * 24 * 7);
       if (weeksDiff > rules.maxAdvanceWeeks) {
-        const maxDate = new Date(now.getTime() + rules.maxAdvanceWeeks * 7 * 24 * 60 * 60 * 1000);
+        const maxDate = new Date(nowUTC.getTime() + rules.maxAdvanceWeeks * 7 * 24 * 60 * 60 * 1000);
         return {
           valid: false,
           error: `No se pueden agendar citas con más de ${rules.maxAdvanceWeeks} semanas de anticipación`,
-          suggestion: `Fecha límite: ${maxDate.toLocaleDateString('es-MX', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            timeZone: timeZone
-          })}`
+          suggestion: `Fecha límite: ${maxDate.toLocaleDateString('es-MX', { timeZone, dateStyle: 'full', day: 'numeric', month: 'long', year: 'numeric' })}`
         };
       }
     }
 
     // 3. VALIDAR DÍAS LABORALES
-    if (rules?.workingDays && rules.workingDays.length > 0) {
-      const dayOfWeek = startDate.getDay();
-      if (!rules.workingDays.includes(dayOfWeek)) {
+    if (rules.workingDays && rules.workingDays.length > 0) {
+      if (!rules.workingDays.includes(dayInTargetTimeZone)) {
         const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
         const allowedDays = rules.workingDays.map(d => dayNames[d]).join(', ');
         
         return {
           valid: false,
-          error: "Día no disponible para citas",
-          suggestion: `Días disponibles: ${allowedDays}`
+          error: `El día seleccionado no es un día laboral.`,
+          suggestion: `Los días disponibles son: ${allowedDays}.`
         };
       }
     }
 
     // 4. VALIDAR HORARIOS LABORALES (solo para eventos con hora específica)
-    if (rules?.workingHours && params.start.dateTime) {
-      const hour = startDate.getHours();
-      const minute = startDate.getMinutes();
+    if (rules.workingHours && params.start.dateTime) {
       const { start: startHour, end: endHour } = rules.workingHours;
       
-      if (hour < startHour || hour >= endHour) {
-        const startTime = this.formatHour(startHour);
-        const endTime = this.formatHour(endHour);
-        
+      if (hourInTargetTimeZone < startHour || hourInTargetTimeZone >= endHour) {
         return {
           valid: false,
-          error: `Horario fuera del rango permitido`,
-          suggestion: `Horario disponible: ${startTime} - ${endTime}`
-        };
-      }
-      
-      // Validar que no sea exactamente en la hora de cierre
-      if (hour === endHour - 1 && minute > 0) {
-        const endTime = this.formatHour(endHour);
-        return {
-          valid: false,
-          error: `Horario muy cercano al cierre`,
-          suggestion: `Última cita disponible: ${this.formatHour(endHour - 1)}:00. Horario de cierre: ${endTime}`
+          error: `El horario solicitado está fuera de las horas de oficina.`,
+          suggestion: `Nuestro horario de atención es de ${this.formatHour(startHour)} a ${this.formatHour(endHour)}.`
         };
       }
     }
 
     // 5. VALIDAR HORARIOS DE DESCANSO
-    if (rules?.breakTimes && params.start.dateTime) {
-      const hour = startDate.getHours();
-      const minute = startDate.getMinutes();
-      const totalMinutes = hour * 60 + minute;
+   // Horarios de Descanso (Break Times)
+    if (rules.breakTimes && params.start.dateTime) {
+      const totalMinutesInTargetTimeZone = hourInTargetTimeZone * 60 + minutesInTargetTimeZone;
       
       for (const breakTime of rules.breakTimes) {
         const breakStart = breakTime.start * 60;
         const breakEnd = breakTime.end * 60;
         
-        if (totalMinutes >= breakStart && totalMinutes < breakEnd) {
+        if (totalMinutesInTargetTimeZone >= breakStart && totalMinutesInTargetTimeZone < breakEnd) {
           const breakStartFormatted = this.formatDecimalHour(breakTime.start);
           const breakEndFormatted = this.formatDecimalHour(breakTime.end);
           
           return {
             valid: false,
-            error: "Horario en periodo de descanso",
-            suggestion: `Evita el horario de ${breakStartFormatted} - ${breakEndFormatted}`
+            error: "El horario solicitado coincide con un periodo de descanso.",
+            suggestion: `Por favor, evita el horario de ${breakStartFormatted} a ${breakEndFormatted}.`
           };
         }
       }
     }
-
     // 6. VALIDAR RESERVAS DEL MISMO DÍA
-    if (!rules?.allowSameDayBooking) {
-      const today = new Date();
+    if (rules.allowSameDayBooking === false) {
+      const today = new Date(nowInTargetTimeZone);
+      const appointmentDay = new Date(startDateInTargetTimeZone);
+
       today.setHours(0, 0, 0, 0);
-      const appointmentDay = new Date(startDate);
       appointmentDay.setHours(0, 0, 0, 0);
-      
+
       if (appointmentDay.getTime() === today.getTime()) {
-        const tomorrow = new Date(today);
-        tomorrow.setDate(today.getDate() + 1);
-        
         return {
           valid: false,
-          error: "No se permiten citas para el mismo día",
-          suggestion: `Selecciona una fecha a partir de: ${tomorrow.toLocaleDateString('es-MX', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            timeZone: timeZone
-          })}`
+          error: "No se permiten citas para el mismo día.",
+          suggestion: "Por favor, agenda con al menos un día de anticipación."
         };
       }
     }
 
     // 7. VALIDAR DÍAS FESTIVOS (si están configurados)
-    if (rules?.holidayCalendar && rules.holidayCalendar.length > 0) {
-      const appointmentDateStr = startDate.toISOString().split('T')[0]; // YYYY-MM-DD
+    if (rules.holidayCalendar && rules.holidayCalendar.length > 0) {
+      // **CORRECCIÓN AQUÍ:** Usamos la fecha en la zona horaria correcta.
+      const year = startDateInTargetTimeZone.getFullYear();
+      const month = (startDateInTargetTimeZone.getMonth() + 1).toString().padStart(2, '0');
+      const day = startDateInTargetTimeZone.getDate().toString().padStart(2, '0');
+      const appointmentDateStr = `${year}-${month}-${day}`; // Formato YYYY-MM-DD
+      
       if (rules.holidayCalendar.includes(appointmentDateStr)) {
-        return {
-          valid: false,
-          error: "Fecha no disponible (día festivo)",
-          suggestion: "Selecciona una fecha que no sea día festivo"
-        };
+        return { valid: false, error: "Fecha no disponible (día festivo).", suggestion: "Selecciona una fecha que no sea día festivo." };
       }
     }
 
     // 8. VALIDAR FECHA NO SEA EN EL PASADO
-    if (startDate.getTime() <= now.getTime()) {
+    if (startDateUTC.getTime() <= nowUTC.getTime()) {
       return {
         valid: false,
-        error: "No se pueden agendar citas en el pasado",
-        suggestion: "Selecciona una fecha y hora futura"
+        error: "No se pueden agendar citas en el pasado.",
+        suggestion: "Por favor, selecciona una fecha y hora futura."
       };
     }
 
     // 9. VALIDAR DURACIÓN DE LA CITA (si hay fecha de fin)
     if (params.end && (params.end.dateTime || params.end.date)) {
-      const endDate = new Date(params.end.dateTime || params.end.date);
-      
-      if (endDate.getTime() <= startDate.getTime()) {
-        return {
-          valid: false,
-          error: "La fecha de fin debe ser posterior a la fecha de inicio",
-          suggestion: "Verifica que las fechas de inicio y fin estén correctas"
-        };
+      const endDateUTC = new Date(params.end.dateTime || params.end.date);
+      if (endDateUTC.getTime() <= startDateUTC.getTime()) {
+        return { valid: false, error: "La fecha de fin debe ser posterior a la fecha de inicio.", suggestion: "Verifica que las fechas de inicio y fin estén correctas." };
       }
-      
-      // Validar duración máxima (si está configurada)
-      const durationHours = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60);
-      const maxDurationHours = rules?.maxAppointmentDurationHours || 8; // 8 horas por defecto
-      
+      const durationHours = (endDateUTC.getTime() - startDateUTC.getTime()) / 3600000;
+      const maxDurationHours = rules.maxAppointmentDurationHours || 8;
       if (durationHours > maxDurationHours) {
-        return {
-          valid: false,
-          error: `La duración de la cita no puede exceder ${maxDurationHours} horas`,
-          suggestion: `Duración actual: ${durationHours.toFixed(1)} horas. Máximo permitido: ${maxDurationHours} horas`
-        };
+        return { valid: false, error: `La duración de la cita no puede exceder ${maxDurationHours} horas.`, suggestion: `Duración actual: ${durationHours.toFixed(1)} horas. Máximo permitido: ${maxDurationHours} horas.` };
       }
     }
 
     // 10. VALIDAR INTERVALOS DE TIEMPO (si están configurados)
-    if (rules?.timeSlotIntervalMinutes && params.start.dateTime) {
-      const minutes = startDate.getMinutes();
+if (rules.timeSlotIntervalMinutes && params.start.dateTime) {
       const interval = rules.timeSlotIntervalMinutes;
       
-      if (minutes % interval !== 0) {
+      if (minutesInTargetTimeZone % interval !== 0) {
         const validMinutes = [];
         for (let i = 0; i < 60; i += interval) {
           validMinutes.push(i.toString().padStart(2, '0'));
@@ -580,8 +542,8 @@ private async validateBusinessRules(
         
         return {
           valid: false,
-          error: `La hora debe ser en intervalos de ${interval} minutos`,
-          suggestion: `Minutos válidos: ${validMinutes.join(', ')} (ej: 10:${validMinutes[0]}, 10:${validMinutes[1]})`
+          error: `La hora debe ser en intervalos de ${interval} minutos.`,
+          suggestion: `Los minutos válidos para la hora son: ${validMinutes.join(', ')} (ej. 10:${validMinutes[0]}, 10:${validMinutes[1]}).`
         };
       }
     }

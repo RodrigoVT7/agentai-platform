@@ -179,6 +179,11 @@ private async executeIntegrationAction(
     const { type, provider, id: integrationId, agentId } = integration;
     const integrationKey = `${type}:${provider}`;
 
+     // ======================= LOG #1: AÑADIR ESTE BLOQUE =======================
+    this.logger.info(`[Validation Debug] Executing action: '${action}' for integration: ${integrationId}`);
+    this.logger.info(`[Validation Debug] RAW parameters from LLM: ${JSON.stringify(parameters, null, 2)}`);
+    // =========================================================================
+
     this.logger.info(`🔍 [Execute] Delegando acción '${action}' para ${integrationKey} (ID: ${integrationId})`);
 
     // 🔥 VALIDACIÓN UNIVERSAL ÚNICA (incluye reglas de negocio + eventId)

@@ -201,48 +201,316 @@ export async function GoogleCalendar(request: HttpRequest, context: InvocationCo
 
 // Asegúrate que esta función esté definida o importada correctamente
 // Esta es una función auxiliar que debe existir en tu archivo o ser importada.
-async function handleGoogleAuthCallback(request: HttpRequest, logger: any): Promise<HttpResponseInit> {
-  const handler = new GoogleCalendarHandler(logger); // Necesita su propia instancia
-  try {
-    const code = request.query.get('code');
-    const state = request.query.get('state');
-    const error = request.query.get('error');
+async function handleGoogleAuthCallback(
 
-    if (error) {
-      logger.warn(`Error en callback de Google: ${error}`);
-      // DEVOLVER JSON EN LUGAR DE REDIRECCIÓN SI ASÍ SE PREFIERE
-      return { status: 400, jsonBody: { success: false, error: `Error de Google: ${error}`, details: request.query.get('error_description') }};
-    }
-    
-    if (!code || !state) {
-      logger.warn(`Callback de Google incompleto: code=${code}, state=${state}`);
-      return { status: 400, jsonBody: { success: false, error: "Parámetros faltantes en callback de Google" }};
-    }
-    
-    let stateData;
-    try {
-      stateData = JSON.parse(Buffer.from(state, 'base64').toString());
-    } catch (e) {
-      logger.error(`Error al decodificar state: ${e}`);
-      return { status: 400, jsonBody: { success: false, error: "State inválido en callback" }};
-    }
-    
-    const { userId, agentId } = stateData;
-    if (!userId || !agentId) {
-      logger.warn(`State inválido en callback (faltan userId o agentId): ${state}`);
-      return { status: 400, jsonBody: { success: false, error: "State no contiene datos necesarios" }};
-    }
-    
-    const result = await handler.processAuthCode(code, userId, agentId); // Este userId es el de la plataforma que inició el OAuth
-    
-    // Devolver JSON con el resultado de la integración
-    return { status: 200, jsonBody: { success: true, message: "Autorización con Google completada.", integrationId: result.integrationId, agentId: agentId }};
+  request: HttpRequest,
+
+  logger: any
+
+): Promise<HttpResponseInit> {
+
+  const handler = new GoogleCalendarHandler(logger);
+
+
+
+  try {
+
+   const code = request.query.get("code");
+
+   const state = request.query.get("state");
+
+   const error = request.query.get("error");
+
+
+
+   if (error) {
+
+     logger.warn(`Error en callback de Google: ${error}`);
+
+     return {
+
+       status: 400,
+
+       jsonBody: {
+
+         success: false,
+
+         error: `Error de Google: ${error}`,
+
+         details: request.query.get("error_description"),
+
+       },
+
+     };
+
+   }
+
+
+
+   if (!code || !state) {
+
+     logger.warn(
+
+       `Callback de Google incompleto: code=${code}, state=${state}`
+
+     );
+
+     return {
+
+       status: 400,
+
+       jsonBody: {
+
+         success: false,
+
+         error: "Parámetros faltantes en callback de Google",
+
+       },
+
+     };
+
+   }
+
+
+
+   let stateData;
+
+   try {
+
+     stateData = JSON.parse(Buffer.from(state, "base64").toString());
+
+   } catch (e) {
+
+     logger.error(`Error al decodificar state: ${e}`);
+
+     return {
+
+       status: 400,
+
+       jsonBody: { success: false, error: "State inválido en callback" },
+
+     };
+
+   }
+
+
+
+   const { userId, agentId, origin } = stateData;
+
+   if (!userId || !agentId) {
+
+     logger.warn(
+
+       `State inválido en callback (faltan userId o agentId): ${state}`
+
+     );
+
+     return {
+
+       status: 400,
+
+       jsonBody: {
+
+         success: false,
+
+         error: "State no contiene datos necesarios",
+
+       },
+
+     };
+
+   }
+
+
+
+   const result = await handler.processAuthCode(code, userId, agentId);
+
+   const safeOrigin = origin || "*"; // Fallback seguro si no se provee
+
+
+
+   const htmlBody = `
+
+     <!DOCTYPE html>
+
+     <html lang="es">
+
+     <head>
+
+       <meta charset="UTF-8" />
+
+       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+       <title>Autorización completada</title>
+
+       <style>
+
+         body {
+
+           font-family: system-ui, sans-serif;
+
+           display: flex;
+
+           flex-direction: column;
+
+           align-items: center;
+
+           justify-content: center;
+
+           height: 100vh;
+
+           margin: 0;
+
+           background-color: #000;
+
+           color: #fff;
+
+         }
+
+         h2, p {
+
+           margin: 0.5em 0;
+
+         }
+
+         code {
+
+           font-size: 12px;
+
+           background-color: #111;
+
+           color: #0f0;
+
+           padding: 4px;
+
+           border-radius: 4px;
+
+           word-break: break-all;
+
+         }
+
+       </style>
+
+     </head>
+
+     <body>
+
+       <h2>¡"${result.message}"!</h2>
+
+       <script>
+
+         (function () {
+
+           const message = {
+
+             type: "GOOGLE_CALENDAR_AUTH_CALLBACK",
+
+             success: "${result.success}",
+
+             calendarId: "${encodeURIComponent(result.calendarId || "")}",
+
+             accessToken: "${encodeURIComponent(result.accessToken || "")}",
+
+             integrationId: "${encodeURIComponent(
+
+               result.integrationId || ""
+
+             )}",
+
+             agentId: "${encodeURIComponent(agentId || "")}"
+
+           };
+
+
+
+           console.log("[Popup] Mensaje preparado para enviar:");
+
+           console.log(message);
+
+
+
+           function sendMessage() {
+
+             console.log("[Popup] Ejecutando sendMessage()...");
+
+
+
+             if (window.opener) {
+
+               try {
+
+                 window.opener.postMessage(message, "${safeOrigin}");
+
+                 console.log("[Popup] postMessage enviado con éxito a: ${safeOrigin}");
+
+               } catch (error) {
+
+                 console.error("[Popup] Error al enviar postMessage:", error);
+
+               }
+
+             } else {
+
+               console.warn("[Popup] No se encontró window.opener");
+
+             }
+
+           }
+
+
+
+           // Enviar el mensaje dos veces por seguridad
+
+           sendMessage();
+
+           setTimeout(sendMessage, 100);
+
+         })();
+
+       </script>
+
+     </body>
+
+     </html>
+
+`.trim();
+
+
+
+   return {
+
+     status: 200,
+
+     headers: { "Content-Type": "text/html" },
+
+     body: htmlBody,
+
+   };
 
   } catch (error) {
-    logger.error("Error en handleGoogleAuthCallback:", error);
-    const appError = toAppError(error);
-    return { status: appError.statusCode || 500, jsonBody: { success: false, error: appError.message, details: appError.details }};
+
+   logger.error("Error en handleGoogleAuthCallback:", error);
+
+   const appError = toAppError(error);
+
+   return {
+
+     status: appError.statusCode || 500,
+
+     jsonBody: {
+
+       success: false,
+
+       error: appError.message,
+
+       details: appError.details,
+
+     },
+
+   };
+
   }
+
 }
 
 

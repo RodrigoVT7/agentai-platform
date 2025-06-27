@@ -2,7 +2,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { BlobServiceClient } from "@azure/storage-blob";
 import { TableClient } from "@azure/data-tables";
-import * as pdfjs from 'pdfjs-dist';
+const pdfjs: any = require('pdfjs-dist/legacy/build/pdf.js');
 import * as XLSX from 'xlsx';
 import * as mammoth from 'mammoth';
 import { 

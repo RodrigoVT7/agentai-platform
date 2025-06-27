@@ -65,69 +65,112 @@ export class GoogleCalendarHandler {
     }
   }
 
-  async processAuthCode(code: string, userId: string, agentId: string): Promise<any> {
+  async processAuthCode(
+    code: string,
+    userId: string,
+    agentId: string
+  ): Promise<any> {
     try {
       const hasAccess = await this.verifyOwnerOrAdminAccess(agentId, userId);
       if (!hasAccess) {
-        throw createAppError(403, "No tienes permiso para completar la configuración de esta integración para el agente.");
+        throw createAppError(
+          403,
+          "No tienes permiso para completar la configuración de esta integración para el agente."
+        );
       }
 
-      const oauth2Client = new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
+      const oauth2Client = new google.auth.OAuth2(
+        this.clientId,
+        this.clientSecret,
+        this.redirectUri
+      );
       const { tokens } = await oauth2Client.getToken(code);
 
       if (!tokens.access_token) {
-        throw createAppError(400, "No se pudo obtener token de acceso de Google.");
+        throw createAppError(
+          400,
+          "No se pudo obtener token de acceso de Google."
+        );
       }
       if (!tokens.refresh_token) {
-        this.logger.warn("No se recibió refresh_token de Google. El acceso podría expirar y requerir re-autenticación manual.");
+        this.logger.warn(
+          "No se recibió refresh_token de Google. El acceso podría expirar y requerir re-autenticación manual."
+        );
       }
 
       oauth2Client.setCredentials(tokens);
-      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-      
+      const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+
       const calendarResponse = await calendar.calendarList.list();
-      const primaryCalendar = calendarResponse.data.items?.find(cal => cal.primary) || calendarResponse.data.items?.[0];
+      const primaryCalendar =
+        calendarResponse.data.items?.find((cal) => cal.primary) ||
+        calendarResponse.data.items?.[0];
 
       if (!primaryCalendar?.id) {
-          throw createAppError(400, "No se pudo determinar el calendario principal del usuario de Google.");
+        throw createAppError(
+          400,
+          "No se pudo determinar el calendario principal del usuario de Google."
+        );
       }
-
       const integrationId = uuidv4();
       const now = Date.now();
       const config: IntegrationGoogleCalendarConfig = {
         accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token || '', 
-        expiresAt: tokens.expiry_date || (Date.now() + 3599 * 1000), 
-        scope: Array.isArray(tokens.scope) ? tokens.scope.join(' ') : tokens.scope || '',
+        refreshToken: tokens.refresh_token || "",
+        expiresAt: tokens.expiry_date || Date.now() + 3599 * 1000,
+        scope: Array.isArray(tokens.scope)
+          ? tokens.scope.join(" ")
+          : tokens.scope || "",
         calendarId: primaryCalendar.id,
         timezone: primaryCalendar.timeZone || undefined,
-        maxConcurrentAppointments: GOOGLE_CALENDAR_CONFIG.DEFAULT_MAX_CONCURRENT_APPOINTMENTS // Añadido desde constantes
+        maxConcurrentAppointments:
+          GOOGLE_CALENDAR_CONFIG.DEFAULT_MAX_CONCURRENT_APPOINTMENTS, // Añadido desde constantes
       };
 
       const integration: Integration = {
         id: integrationId,
         agentId,
-        name: `Google Calendar (${primaryCalendar.summary || primaryCalendar.id})`,
-        description: `Integración con Google Calendar para el calendario: ${primaryCalendar.summary || primaryCalendar.id}`,
+        name: `Google Calendar (${
+          primaryCalendar.summary || primaryCalendar.id
+        })`,
+        description: `Integración con Google Calendar para el calendario: ${
+          primaryCalendar.summary || primaryCalendar.id
+        }`,
         type: IntegrationType.CALENDAR,
-        provider: 'google',
-        config: JSON.stringify(config), 
-        credentials: config.refreshToken || config.accessToken, 
-        status: IntegrationStatus.ACTIVE, 
+        provider: "google",
+        config: JSON.stringify(config),
+        credentials: config.refreshToken || config.accessToken,
+        status: IntegrationStatus.ACTIVE,
         createdBy: userId,
         createdAt: now,
-        isActive: true
+        isActive: true,
       };
 
-      const tableClient = this.storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
-      await tableClient.createEntity({ partitionKey: agentId, rowKey: integrationId, ...integration });
+      const tableClient = this.storageService.getTableClient(
+        STORAGE_TABLES.INTEGRATIONS
+      );
+      await tableClient.createEntity({
+        partitionKey: agentId,
+        rowKey: integrationId,
+        ...integration,
+      });
 
-      this.logger.info(`Integración Google Calendar ${integrationId} creada exitosamente para agente ${agentId} por usuario ${userId}.`);
-      return { integrationId, success: true, message: "Integración con Google Calendar configurada exitosamente." };
-
+      this.logger.info(
+        `Integración Google Calendar ${integrationId} creada exitosamente para agente ${agentId} por usuario ${userId}.`
+      );
+      return {
+        integrationId,
+        accessToken: config.accessToken,
+        calendarId: config.calendarId,
+        success: true,
+        message: "Integración con Google Calendar configurada exitosamente.",
+      };
     } catch (error) {
-      this.logger.error("Error al procesar código de autorización de Google:", error);
-      throw toAppError(error); 
+      this.logger.error(
+        "Error al procesar código de autorización de Google:",
+        error
+      );
+      throw toAppError(error);
     }
   }
 

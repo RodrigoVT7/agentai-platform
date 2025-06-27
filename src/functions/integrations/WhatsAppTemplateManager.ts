@@ -1,4 +1,4 @@
-// src/functions/integrations/ManageWhatsAppTemplates.ts
+// src/functions/integrations/WhatsAppTemplateManager.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { createLogger } from "../../shared/utils/logger";
 import { JwtService } from "../../shared/utils/jwt.service";
@@ -7,8 +7,7 @@ import { WhatsAppTemplateManagerHandler } from "../../shared/handlers/integratio
 import { StorageService } from "../../shared/services/storage.service";
 import { STORAGE_TABLES } from "../../shared/constants";
 import { Integration, IntegrationWhatsAppConfig } from "../../shared/models/integration.model";
-import { Agent, AgentHandoffConfig, HandoffMethod } from "../../shared/models/agent.model"; //
-
+import { Agent, AgentHandoffConfig, HandoffMethod } from "../../shared/models/agent.model";
 
 async function getClientWhatsAppIntegration(agentId: string, platformUserId: string, storageService: StorageService, logger: any): Promise<Integration | null> {
     // 1. Fetch Agent to get clientWhatsAppIntegrationId from handoffConfig
@@ -16,7 +15,7 @@ async function getClientWhatsAppIntegration(agentId: string, platformUserId: str
 
     let agentConfig: Agent;
     try {
-        const agentEntity = await agentTable.getEntity('agent', agentId); //
+        const agentEntity = await agentTable.getEntity('agent', agentId);
         agentConfig = agentEntity as unknown as Agent;
         if (agentConfig.userId !== platformUserId) {
             logger.warn(`Usuario ${platformUserId} no es dueño del agente ${agentId}.`);
@@ -29,7 +28,7 @@ async function getClientWhatsAppIntegration(agentId: string, platformUserId: str
     }
 
     let handoffConfig: AgentHandoffConfig | undefined;
-    if (agentConfig.handoffConfig && typeof agentConfig.handoffConfig === 'string') { //
+    if (agentConfig.handoffConfig && typeof agentConfig.handoffConfig === 'string') {
         try {
             handoffConfig = JSON.parse(agentConfig.handoffConfig);
         } catch (e) {
@@ -43,12 +42,10 @@ async function getClientWhatsAppIntegration(agentId: string, platformUserId: str
         logger.warn(`Agente ${agentId} no tiene un clientWhatsAppIntegrationId configurado para handoff.`);
         return null;
     }
-    logger.warn(clientWhatsAppIntegrationId);
 
     // 2. Fetch the client's WhatsApp Integration record
     const integrationsTable = storageService.getTableClient(STORAGE_TABLES.INTEGRATIONS);
     try {
-        // Assuming PartitionKey for Integrations is agentId. Adjust if it's platformUserId.
         const integrationEntity = await integrationsTable.getEntity(agentId, clientWhatsAppIntegrationId);
         const clientIntegration = integrationEntity as unknown as Integration;
 
@@ -67,12 +64,11 @@ async function getClientWhatsAppIntegration(agentId: string, platformUserId: str
     }
 }
 
-
 export async function manageWhatsAppTemplates(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
     const logger = createLogger(context);
-    logger.info("ManageWhatsAppTemplates function processed a request.");
+    logger.info("WhatsAppTemplateManager function processed a request.");
 
-    const storageService = new StorageService(); //
+    const storageService = new StorageService();
 
     try {
         const authHeader = request.headers.get('authorization');
@@ -90,22 +86,20 @@ export async function manageWhatsAppTemplates(request: HttpRequest, context: Inv
         const platformUserId = platformUserPayload.userId;
 
         const handler = new WhatsAppTemplateManagerHandler(logger);
-        const agentId = request.query.get("agentId"); // Agent whose templates are being managed
+        const agentId = request.query.get("agentId");
 
         if (!agentId) {
             return { status: 400, jsonBody: { error: "Se requiere el parámetro 'agentId'." } };
         }
 
         // Fetch the client's WhatsApp integration details (which includes their User Access Token)
-        // This assumes you have a way to link `agentId` (or `platformUserId`) to the specific `Integration` record
-        // that was created during the OAuth flow for this client.
         const clientIntegration = await getClientWhatsAppIntegration(agentId, platformUserId, storageService, logger);
 
         if (!clientIntegration || !clientIntegration.config) {
             return { status: 404, jsonBody: { error: "No se encontró una integración de WhatsApp activa y configurada para este agente y usuario, o no tienes permiso." } };
         }
 
-        const whatsAppConfig = (typeof clientIntegration.config === 'string' ? JSON.parse(clientIntegration.config) : clientIntegration.config) as IntegrationWhatsAppConfig; //
+        const whatsAppConfig = (typeof clientIntegration.config === 'string' ? JSON.parse(clientIntegration.config) : clientIntegration.config) as IntegrationWhatsAppConfig;
 
         if (!whatsAppConfig.accessToken || !whatsAppConfig.businessAccountId) {
             return { status: 400, jsonBody: { error: "La configuración de la integración de WhatsApp del cliente está incompleta (falta accessToken o WABA ID)." } };
@@ -114,14 +108,14 @@ export async function manageWhatsAppTemplates(request: HttpRequest, context: Inv
         const clientWabaId = whatsAppConfig.businessAccountId;
 
         if (request.method === "POST") { // Create a new template
-            const templateData = await request.json() as any; // Define a strong type for CreateTemplateRequest
+            const templateData = await request.json() as any;
             if (!templateData.name || !templateData.language || !templateData.category || !templateData.components) {
                 return { status: 400, jsonBody: { error: "Faltan campos requeridos para crear la plantilla." } };
             }
 
             const result = await handler.createTemplate(clientUserAccessToken, clientWabaId, templateData);
 
-            if (result.success && result.templateId && result.status === "APPROVED") { // Or check for PENDING if direct approval is rare
+            if (result.success && result.templateId && result.status === "APPROVED") {
                 // If approved (or pending), store template name and lang in Agent.handoffConfig
                 const agentTable = storageService.getTableClient(STORAGE_TABLES.AGENTS);
                 try {
@@ -131,7 +125,6 @@ export async function manageWhatsAppTemplates(request: HttpRequest, context: Inv
 
                     currentHandoffConfig.clientWhatsAppTemplateName = templateData.name;
                     currentHandoffConfig.clientWhatsAppTemplateLangCode = templateData.language;
-                    // clientWhatsAppIntegrationId should have been set during OAuth callback or a separate config step
 
                     await agentTable.updateEntity({
                         partitionKey: 'agent',
@@ -141,7 +134,6 @@ export async function manageWhatsAppTemplates(request: HttpRequest, context: Inv
                     logger.info(`HandoffConfig del Agente ${agentId} actualizado con la nueva plantilla: ${templateData.name}`);
                 } catch (agentUpdateError) {
                      logger.error(`Error al actualizar handoffConfig del Agente ${agentId} con la nueva plantilla:`, agentUpdateError);
-                     // Non-fatal, template was still submitted to Meta.
                 }
             }
             return { status: result.success ? 201 : (result.error?.statusCode || 500), jsonBody: result };
@@ -157,15 +149,15 @@ export async function manageWhatsAppTemplates(request: HttpRequest, context: Inv
         }
 
     } catch (error) {
-        logger.error("Error en ManageWhatsAppTemplates:", error);
+        logger.error("Error en WhatsAppTemplateManager:", error);
         const appError = toAppError(error);
         return { status: appError.statusCode, jsonBody: { error: appError.message, details: appError.details } };
     }
 }
 
-app.http('ManageWhatsAppTemplates', {
-    methods: ['POST', 'GET'], // Add other methods like PUT, DELETE as needed
-    authLevel: 'anonymous', // Manual JWT check
-    route: 'integrations/whatsapp/templates', // Example route
+app.http('WhatsAppTemplateManager', {
+    methods: ['POST', 'GET'],
+    authLevel: 'anonymous',
+    route: 'integrations/whatsapp/templates',
     handler: manageWhatsAppTemplates
 });

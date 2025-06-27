@@ -3,7 +3,7 @@ import { StorageService } from "../../services/storage.service";
 import { STORAGE_TABLES } from "../../constants";
 import { Logger, createLogger } from "../../utils/logger";
 import { createAppError } from "../../utils/error.utils";
-import { Conversation, Message } from "../../models/conversation.model";
+import { Conversation, Message, MessageStatus } from "../../models/conversation.model";
 import { WhatsAppIntegrationHandler } from "../integrations/whatsAppIntegrationHandler"; // Importar handler específico
 import {Integration, IntegrationStatus } from "../../models/integration.model";
 
@@ -90,11 +90,16 @@ export class MessageSenderHandler {
                     };
                      // Llama al sendMessage del handler específico
                      const response = await this.whatsAppHandler.sendMessage(messageData, conversation.userId || agentId); // Pasamos el userId de la conversación o el agentId como solicitante
-
+const waMessageId = response.jsonBody?.waMessageId;
                      // Analizar la respuesta para determinar el éxito
                     if (response.status === 200 && response.jsonBody && (response.jsonBody as any).success) {
                          sendResult = { success: true, response: response.jsonBody };
-                         // Podrías actualizar el estado del mensaje a 'DELIVERED' o esperar webhook de estado
+                         
+                         if (waMessageId) {
+                            await this.updateMessageWithProviderDetails(conversationId, messageToSendId, { whatsapp: { waMessageId } });
+                            this.logger.info(`Mensaje interno ${messageToSendId} actualizado con waMessageId: ${waMessageId}`);
+                         }
+
                     } else {
                          sendResult = { success: false, response: response.jsonBody || { error: `Status ${response.status}` } };
                          // Marcar el mensaje como FAILED
@@ -177,5 +182,47 @@ export class MessageSenderHandler {
              return null;
          }
      }
+
+   private async updateMessageWithProviderDetails(conversationId: string, messageId: string, providerMetadata: Record<string, any>): Promise<void> {
+    try {
+        const tableClient = this.storageService.getTableClient(STORAGE_TABLES.MESSAGES);
+        
+        const existingMessage = await tableClient.getEntity(conversationId, messageId);
+        let currentMetadata = {};
+        if (existingMessage.metadata && typeof existingMessage.metadata === 'string') {
+            try { currentMetadata = JSON.parse(existingMessage.metadata); } catch {}
+        } else if (existingMessage.metadata) {
+            currentMetadata = existingMessage.metadata;
+        }
+
+        const updatedMetadata = { ...currentMetadata, ...providerMetadata };
+
+        const updatePayload = {
+            partitionKey: conversationId,
+            rowKey: messageId,
+            metadata: JSON.stringify(updatedMetadata)
+        };
+        await tableClient.updateEntity(updatePayload, "Merge");
+    } catch (error: any) {
+        if (error.statusCode !== 404) {
+            this.logger.error(`Error al actualizar metadata del mensaje ${messageId}:`, error);
+        }
+    }
+}
+
+private async updateMessageStatus(conversationId: string, messageId: string, status: MessageStatus, errorMessage?: string): Promise<void> {
+    try {
+        const tableClient = this.storageService.getTableClient(STORAGE_TABLES.MESSAGES);
+        const updatePayload: any = { partitionKey: conversationId, rowKey: messageId, status: status };
+        if (errorMessage) {
+            updatePayload.errorMessage = errorMessage.substring(0, 1024);
+        }
+        await tableClient.updateEntity(updatePayload, "Merge");
+    } catch (error: any) {
+         if (error.statusCode !== 404) {
+             this.logger.warn(`Error al actualizar estado del mensaje ${messageId} a ${status}:`, error);
+         }
+    }
+}
 
 }

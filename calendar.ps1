@@ -1,60 +1,75 @@
-# Nombre de la carpeta de destino para los archivos del núcleo del chatbot
-$destFolder = "chatbot_nucleo_archivos"
+# ===================================================================
+# Script para Copiar Archivos de Integración de WhatsApp
+# Autor: Gemini
+# Descripción: Este script recopila todos los archivos clave
+# involucrados en la conexión y comunicación con WhatsApp y
+# los copia a una carpeta designada para su revisión.
+# ===================================================================
 
-# Lista de archivos a copiar (rutas relativas a la ubicación del script)
-# Estos son los archivos identificados como clave para la lógica principal del chatbot.
+# --- Configuración ---
+# Nombre de la carpeta donde se copiarán los archivos.
+$destFolder = "WhatsAppIntegrationAudit"
+
+# Lista de rutas relativas de los archivos a copiar.
 $filesToCopy = @(
-  "src/functions/conversation/MessageReceiver.ts",
-  "src/shared/handlers/conversation/MessageReceiverHandler.ts",
-  "src/functions/conversation/ChatCompletion.ts",
-  "src/shared/handlers/conversation/ChatCompletionHandler.ts",
-  "src/functions/conversation/ConversationHistory.ts",
-  "src/shared/handlers/conversation/ConversationHistoryHandler.ts",
-  "src/functions/conversation/ContextRetriever.ts",
-  "src/shared/handlers/conversation/ContextRetrieverHandler.ts",
-  "src/shared/models/conversation.model.ts",
-  "src/shared/handlers/conversation/AdvancedWorkflowHandler.ts", # o IntelligentWorkflowHandler.ts si es más relevante
-  "src/functions/integrations/GoogleCalendar.ts",
-  "src/shared/handlers/integrations/GoogleCalendarHandler.ts",
-  "src/shared/validators/integrations/googleCalendarValidator.ts",
-  "src/shared/models/user.model.ts",
-  "src/shared/handlers/auth/UserProfileHandler.ts",
-  "src/index.ts",
-  "src/shared/utils/logger.ts",
-  "src/shared/utils/error.utils.ts",
-  "src/functions/integrations/IntegrationExecutor.ts",
-  "src/shared/handlers/integrations/IntegrationExecutorHandler.ts"
+    # --- Endpoints y Configuración Principal ---
+    "src/functions/integrations/WhatsAppChannel.ts",
+    "src/functions/integrations/MetaOAuth.ts",
+    "src/functions/integrations/WhatsAppTemplateManager.ts",
+
+    # --- Lógica de Negocio (Handlers) ---
+    "src/shared/handlers/integrations/whatsAppIntegrationHandler.ts",
+    "src/shared/handlers/integrations/whatsAppTemplateManagerHandler.ts",
+    "src/shared/handlers/conversation/messageReceiverHandler.ts",
+    "src/shared/handlers/conversation/messageSenderHandler.ts",
+    
+    # --- Servicios de Soporte ---
+    "src/shared/services/metaPlatform.service.ts",
+
+    # --- Validadores ---
+    "src/shared/validators/integrations/whatsAppIntegrationValidator.ts",
+
+    # --- Modelos de Datos y Constantes ---
+    "src/shared/models/meta.model.ts",
+    "src/shared/models/integration.model.ts",
+    "src/shared/models/conversation.model.ts",
+    "src/shared/constants/index.ts"
 )
 
-# Ruta completa de la carpeta de destino
-# Se asume que este script se ejecuta en la raíz del proyecto donde se encuentra la carpeta 'src'
-$projectRoot = $PSScriptRoot # Directorio donde se encuentra el script actual
-# Si el script NO está en la raíz del proyecto, ajusta $projectRoot manualmente, por ejemplo:
-# $projectRoot = "C:\ruta\a\tu\proyecto" # O usa Get-Location si ejecutas desde la raíz.
+# --- Ejecución ---
+# Obtener la ruta raíz del proyecto (asume que el script se ejecuta desde la raíz)
+$projectRoot = Get-Location
 
+# Construir la ruta completa de destino
 $fullDestPath = Join-Path -Path $projectRoot -ChildPath $destFolder
+
+Write-Host "-----------------------------------------------------"
+Write-Host "Directorio de destino: $fullDestPath"
+Write-Host "-----------------------------------------------------"
 
 # Crear la carpeta de destino si no existe
 if (-not (Test-Path -Path $fullDestPath -PathType Container)) {
-  New-Item -ItemType Directory -Path $fullDestPath | Out-Null
-  Write-Host "Carpeta '$destFolder' creada en '$projectRoot'."
+    New-Item -ItemType Directory -Path $fullDestPath | Out-Null
+    Write-Host "Carpeta '$destFolder' creada en '$projectRoot'."
 } else {
-  Write-Host "Carpeta '$destFolder' ya existe en '$projectRoot'."
+    Write-Host "Carpeta '$destFolder' ya existe en '$projectRoot'."
 }
 
 # Copiar cada archivo
 Write-Host "Iniciando copia de archivos a '$destFolder' (estructura plana)..."
 foreach ($filePath in $filesToCopy) {
-  $fullSourcePath = Join-Path -Path $projectRoot -ChildPath $filePath
-  
-  if (Test-Path -Path $fullSourcePath -PathType Leaf) {
-    # Copiar directamente a la carpeta de destino, sin mantener estructura de subcarpetas
-    Copy-Item -Path $fullSourcePath -Destination $fullDestPath
-    $fileNameOnly = Split-Path -Path $fullSourcePath -Leaf
-    Write-Host "Copiado: $fileNameOnly -> $fullDestPath"
-  } else {
-    Write-Warning "Archivo no encontrado - $filePath (ruta completa buscada: $fullSourcePath)"
-  }
+    # Reemplazar slashes para compatibilidad con Windows
+    $normalizedFilePath = $filePath.Replace('/', '\')
+    $fullSourcePath = Join-Path -Path $projectRoot -ChildPath $normalizedFilePath
+    
+    if (Test-Path -Path $fullSourcePath -PathType Leaf) {
+        # Copiar directamente a la carpeta de destino, sin mantener estructura de subcarpetas
+        Copy-Item -Path $fullSourcePath -Destination $fullDestPath
+        $fileNameOnly = Split-Path -Path $fullSourcePath -Leaf
+        Write-Host "Copiado: $fileNameOnly -> $fullDestPath"
+    } else {
+        Write-Warning "Archivo no encontrado - $filePath (ruta completa buscada: $fullSourcePath)"
+    }
 }
 
 Write-Host "-----------------------------------------------------"

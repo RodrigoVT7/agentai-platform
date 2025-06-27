@@ -906,15 +906,17 @@ private prepareCompletionMessages(
   let systemContent = systemInstructionsBase || "Eres un asistente útil.";
   
   // Añadir información temporal
-  const now = new Date();
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+ const now = new Date();
+  systemContent = systemContent.replace('{{CURRENT_ISO_DATETIME}}', now.toISOString());
+  const targetTimeZone = 'America/Mexico_City'; // ¡La zona horaria correcta!
+
   try {
     const currentDateTime = now.toLocaleString('es-MX', { 
-      timeZone, 
+      timeZone: targetTimeZone, 
       dateStyle: 'full', 
       timeStyle: 'long' 
     });
-    systemContent += `\n\nFecha y Hora Actual: ${currentDateTime} (${timeZone}).`;
+    systemContent += `\n\nFecha y Hora Actual: ${currentDateTime}.`;
   } catch (e) {
     systemContent += `\n\nFecha y Hora Actual: ${now.toISOString()}.`;
   }

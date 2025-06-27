@@ -45,13 +45,13 @@ import './functions/playground/PlaygroundSession';
 // Módulo de integraciones
 import './functions/integrations/IntegrationCatalog';
 import './functions/integrations/IntegrationConfig';
-import './functions/integrations/WhatsAppIntegration';
+import './functions/integrations/WhatsAppChannel';
 import './functions/integrations/GoogleCalendar';
 import './functions/integrations/MicrosoftGraph';
 import './functions/integrations/ERPConnector';
 import './functions/integrations/IntegrationExecutor';
 import './functions/integrations/MetaOAuth'
-import './functions/integrations/ManageWhatsAppTemplates';
+import './functions/integrations/WhatsAppTemplateManager';
 
 // Módulo de Handoff
 import './functions/handoff/HandoffInitiator';
@@ -60,6 +60,10 @@ import './functions/handoff/AgentAssignment';
 import './functions/handoff/AgentMessaging';
 import './functions/handoff/HandoffCompletion';
 import './functions/handoff/AgentStatusManager';
+
+import './functions/integrations/WhatsAppIntegrationDiagnostics';
+import './functions/integrations/WhatsAppEmbeddedSignupComplete';
+
 
 // Configuración de la aplicación
 app.setup({
